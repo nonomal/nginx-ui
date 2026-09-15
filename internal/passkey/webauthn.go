@@ -1,16 +1,18 @@
 package passkey
 
 import (
-	"github.com/0xJacky/Nginx-UI/internal/logger"
+	"context"
+
 	"github.com/0xJacky/Nginx-UI/settings"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/uozi-tech/cosy/logger"
 )
 
 var instance *webauthn.WebAuthn
 
-func Init() {
-	options := &settings.WebAuthnSettings
+func Init(ctx context.Context) {
+	options := settings.WebAuthnSettings
 
 	if !Enabled() {
 		logger.Debug("WebAuthn settings are not configured")
@@ -34,7 +36,7 @@ func Init() {
 }
 
 func Enabled() bool {
-	options := &settings.WebAuthnSettings
+	options := settings.WebAuthnSettings
 	if options.RPDisplayName == "" || options.RPID == "" || len(options.RPOrigins) == 0 {
 		return false
 	}

@@ -1,94 +1,129 @@
 <script setup lang="tsx">
-import { Tag, message } from 'ant-design-vue'
-import type { Column } from '@/components/StdDesign/types'
-import { StdCurd } from '@/components/StdDesign/StdDataDisplay'
+import type { CustomRenderArgs, StdTableColumn } from '@uozi-admin/curd'
 import type { AcmeUser } from '@/api/acme_user'
-import acme_user from '@/api/acme_user'
-import { input, switcher } from '@/components/StdDesign/StdDataEntry'
-import type { customRender } from '@/components/StdDesign/StdDataDisplay/StdTableTransformer'
-import { datetime } from '@/components/StdDesign/StdDataDisplay/StdTableTransformer'
+import { datetimeRender, StdCurd } from '@uozi-admin/curd'
+import { Tag } from 'antdv-next'
 
-const columns: Column[] = [
+import acme_user from '@/api/acme_user'
+import { CA_SERVER_OPTIONS } from '@/constants/acme'
+
+const { message } = App.useApp()
+
+const columns: ComputedRef<StdTableColumn[]> = computed(() => [
   {
     title: () => $gettext('Name'),
     dataIndex: 'name',
-    sortable: true,
-    pithy: true,
+    sorter: true,
+    pure: true,
     edit: {
-      type: input,
-      config: {
+      type: 'input',
+      formItem: {
         required: true,
       },
     },
-  }, {
+    search: true,
+  },
+  {
     title: () => $gettext('Email'),
     dataIndex: 'email',
-    sortable: true,
-    pithy: true,
+    sorter: true,
+    pure: true,
     edit: {
-      type: input,
-      config: {
+      type: 'input',
+      formItem: {
         required: true,
       },
     },
-  }, {
+  },
+  {
     title: () => $gettext('CA Dir'),
     dataIndex: 'ca_dir',
-    sortable: true,
-    pithy: true,
+    sorter: true,
+    pure: true,
     edit: {
-      type: input,
-      config: {
-        placeholder() {
-          return $gettext('If left blank, the default CA Dir will be used.')
-        },
+      type: 'autoComplete',
+      autoComplete: {
+        placeholder: $gettext('Select or enter a CA directory URL'),
+        allowClear: true,
+        options: CA_SERVER_OPTIONS,
       },
+      hint: $gettext('Select a predefined CA directory or enter a custom one. Leave blank to use the default CA directory.'),
     },
-  }, {
+  },
+  {
     title: () => $gettext('Proxy'),
     dataIndex: 'proxy',
     hiddenInTable: true,
     edit: {
-      type: input,
+      type: 'input',
       hint: $gettext('Register a user or use this account to issue a certificate through an HTTP proxy.'),
-      config: {
-        placeholder() {
-          return $gettext('Leave blank if you don\'t need this.')
-        },
+      input: {
+        placeholder: $gettext('Leave blank if you don\'t need this.'),
       },
     },
-  }, {
+  },
+  {
     title: () => $gettext('Status'),
     dataIndex: ['registration', 'body', 'status'],
-    customRender: (args: customRender) => {
-      if (args.text === 'valid')
+    customRender: ({ text }: CustomRenderArgs) => {
+      if (text === 'valid')
         return <Tag color="green">{$gettext('Valid')}</Tag>
 
       return <Tag color="red">{$gettext('Invalid')}</Tag>
     },
-    sortable: true,
-    pithy: true,
-  }, {
+    sorter: true,
+    pure: true,
+  },
+  {
+    title: () => $gettext('EAB Key ID'),
+    dataIndex: 'eab_key_id',
+    hiddenInTable: true,
+    edit: {
+      type: 'input',
+      hint: $gettext('External Account Binding Key ID (optional). Required for some ACME providers like ZeroSSL.'),
+      input: {
+        placeholder: $gettext('Leave blank if not required by your ACME provider'),
+      },
+    },
+    hiddenInDetail: true,
+  },
+  {
+    title: () => $gettext('EAB HMAC Key'),
+    dataIndex: 'eab_hmac_key',
+    hiddenInTable: true,
+    edit: {
+      type: 'input',
+      hint: $gettext('External Account Binding HMAC Key (optional). Should be in Base64 URL encoding format.'),
+      input: {
+        placeholder: $gettext('Leave blank if not required by your ACME provider'),
+      },
+    },
+    hiddenInDetail: true,
+  },
+  {
     title: () => $gettext('Register On Startup'),
     dataIndex: 'register_on_startup',
     hiddenInTable: true,
     hiddenInDetail: true,
     edit: {
-      type: switcher,
+      type: 'switch',
       hint: $gettext('When Enabled, Nginx UI will automatically re-register users upon startup. '
-          + 'Generally, do not enable this unless you are in a dev environment and using Pebble as CA.'),
+        + 'Generally, do not enable this unless you are in a dev environment and using Pebble as CA.'),
     },
-  }, {
+  },
+  {
     title: () => $gettext('Updated at'),
     dataIndex: 'updated_at',
-    customRender: datetime,
-    sortable: true,
-    pithy: true,
-  }, {
-    title: () => $gettext('Action'),
-    dataIndex: 'action',
+    customRender: datetimeRender,
+    sorter: true,
+    pure: true,
   },
-]
+  {
+    title: () => $gettext('Actions'),
+    dataIndex: 'actions',
+    fixed: 'right',
+  },
+])
 
 function register(id: number, data: AcmeUser) {
   acme_user.register(id).then(r => {
@@ -104,6 +139,7 @@ function register(id: number, data: AcmeUser) {
   <StdCurd
     :title="$gettext('ACME User')"
     :columns="columns"
+    disable-export
     :api="acme_user"
   >
     <template #edit="{ data }: {data: AcmeUser}">

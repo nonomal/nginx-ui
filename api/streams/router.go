@@ -1,14 +1,22 @@
 package streams
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
+	"github.com/gin-gonic/gin"
+)
 
 func InitRouter(r *gin.RouterGroup) {
 	r.GET("streams", GetStreams)
-	r.GET("stream/:name", GetStream)
-	r.POST("stream/:name", SaveStream)
-	r.POST("stream/:name/enable", EnableStream)
-	r.POST("stream/:name/disable", DisableStream)
-	r.POST("stream/:name/advance", AdvancedEdit)
-	r.DELETE("stream/:name", DeleteStream)
-	r.POST("stream/:name/duplicate", Duplicate)
+	r.GET("streams/:name", GetStream)
+	o := r.Group("", middleware.RequireSecureSession())
+	{
+		o.PUT("streams", BatchUpdateStreams)
+		o.POST("streams/:name", SaveStream)
+		o.POST("streams/:name/rename", RenameStream)
+		o.POST("streams/:name/enable", EnableStream)
+		o.POST("streams/:name/disable", DisableStream)
+		o.DELETE("streams/:name", DeleteStream)
+		o.POST("streams/:name/duplicate", Duplicate)
+		o.POST("streams/:name/advance", AdvancedEdit)
+	}
 }

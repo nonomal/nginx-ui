@@ -1,17 +1,12 @@
 package user
 
 import (
-	"errors"
+	"time"
+
 	"github.com/0xJacky/Nginx-UI/model"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/0xJacky/Nginx-UI/settings"
 	"golang.org/x/crypto/bcrypt"
-	"time"
-)
-
-var (
-	ErrPasswordIncorrect = errors.New("password incorrect")
-	ErrUserBanned        = errors.New("user banned")
 )
 
 func Login(name string, password string) (user *model.User, err error) {
@@ -19,6 +14,11 @@ func Login(name string, password string) (user *model.User, err error) {
 
 	user, err = u.Where(u.Name.Eq(name)).First()
 	if err != nil {
+		return nil, ErrPasswordIncorrect
+	}
+
+	// if the user is not initialized, return error
+	if user.Password == "" {
 		return nil, ErrPasswordIncorrect
 	}
 
@@ -42,6 +42,7 @@ func BanIP(ip string) {
 			Attempts:  1,
 			ExpiredAt: time.Now().Unix() + int64(settings.AuthSettings.BanThresholdMinutes*60),
 		})
+		return
 	}
 	_, _ = b.Where(b.IP.Eq(ip)).UpdateSimple(b.Attempts.Add(1))
 }

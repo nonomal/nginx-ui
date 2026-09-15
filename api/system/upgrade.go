@@ -1,30 +1,72 @@
 package system
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
-	"github.com/0xJacky/Nginx-UI/internal/logger"
+	"net/http"
+
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
 	"github.com/0xJacky/Nginx-UI/internal/upgrader"
+	"github.com/0xJacky/Nginx-UI/internal/version"
 	"github.com/0xJacky/Nginx-UI/settings"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"net/http"
-	"os"
+	"github.com/uozi-tech/cosy"
+	"github.com/uozi-tech/cosy/logger"
 )
 
-func GetRelease(c *gin.Context) {
-	data, err := upgrader.GetRelease(c.Query("channel"))
-	if err != nil {
-		api.ErrHandler(c, err)
+const defaultUpgradeChannel = "stable"
+
+type upgradeChannelPayload struct {
+	Channel string `json:"channel" binding:"required,oneof=stable prerelease dev"`
+}
+
+func normalizeUpgradeChannel(channel string) string {
+	switch channel {
+	case "stable", "prerelease", "dev":
+		return channel
+	default:
+		return defaultUpgradeChannel
+	}
+}
+
+func GetUpgradeChannel(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"channel": normalizeUpgradeChannel(settings.NodeSettings.UpgradeChannel),
+	})
+}
+
+func SaveUpgradeChannel(c *gin.Context) {
+	var payload upgradeChannelPayload
+	if !cosy.BindAndValid(c, &payload) {
 		return
 	}
-	runtimeInfo, err := upgrader.GetRuntimeInfo()
+
+	if err := settings.Update(func() {
+		settings.NodeSettings.UpgradeChannel = payload.Channel
+	}); err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"channel": payload.Channel,
+	})
+}
+
+func GetRelease(c *gin.Context) {
+	data, err := version.GetRelease(c.Query("channel"))
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
+		return
+	}
+	runtimeInfo, err := version.GetRuntimeInfo()
+	if err != nil {
+		cosy.ErrHandler(c, err)
 		return
 	}
 	type resp struct {
-		upgrader.TRelease
-		upgrader.RuntimeInfo
+		version.TRelease
+		version.RuntimeInfo
 	}
 	c.JSON(http.StatusOK, resp{
 		data, runtimeInfo,
@@ -32,13 +74,7 @@ func GetRelease(c *gin.Context) {
 }
 
 func GetCurrentVersion(c *gin.Context) {
-	curVer, err := upgrader.GetCurrentVersion()
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	c.JSON(http.StatusOK, curVer)
+	c.JSON(http.StatusOK, version.GetVersionInfo())
 }
 
 const (
@@ -55,9 +91,7 @@ type CoreUpgradeResp struct {
 
 func PerformCoreUpgrade(c *gin.Context) {
 	var upGrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+		CheckOrigin: middleware.CheckWebSocketOrigin,
 	}
 	// upgrade http to websocket
 	ws, err := upGrader.Upgrade(c.Writer, c.Request, nil)
@@ -67,10 +101,9 @@ func PerformCoreUpgrade(c *gin.Context) {
 	}
 	defer ws.Close()
 
-	var control struct {
-		DryRun  bool   `json:"dry_run"`
-		Channel string `json:"channel"`
-	}
+	wsWriter := helper.NewSafeWebSocketWriter(ws)
+
+	var control upgrader.Control
 
 	err = ws.ReadJSON(&control)
 
@@ -78,79 +111,9 @@ func PerformCoreUpgrade(c *gin.Context) {
 		logger.Error(err)
 		return
 	}
-
-	_ = ws.WriteJSON(CoreUpgradeResp{
-		Status:  UpgradeStatusInfo,
-		Message: "Initialing core upgrader",
-	})
-
-	u, err := upgrader.NewUpgrader(control.Channel)
-
-	if err != nil {
-		_ = ws.WriteJSON(CoreUpgradeResp{
-			Status:  UpgradeStatusError,
-			Message: "Initial core upgrader error",
-		})
-		_ = ws.WriteJSON(CoreUpgradeResp{
-			Status:  UpgradeStatusError,
-			Message: err.Error(),
-		})
-		logger.Error(err)
-		return
-	}
-	_ = ws.WriteJSON(CoreUpgradeResp{
-		Status:  UpgradeStatusInfo,
-		Message: "Downloading latest release",
-	})
-	progressChan := make(chan float64)
-	go func() {
-		for progress := range progressChan {
-			_ = ws.WriteJSON(CoreUpgradeResp{
-				Status:   UpgradeStatusProgress,
-				Progress: progress,
-			})
-		}
-	}()
-
-	tarName, err := u.DownloadLatestRelease(progressChan)
-	if err != nil {
-		_ = ws.WriteJSON(CoreUpgradeResp{
-			Status:  UpgradeStatusError,
-			Message: "Download latest release error",
-		})
-		_ = ws.WriteJSON(CoreUpgradeResp{
-			Status:  UpgradeStatusError,
-			Message: err.Error(),
-		})
-		logger.Error(err)
-		return
-	}
-
-	defer func() {
-		_ = os.Remove(tarName)
-		_ = os.Remove(tarName + ".digest")
-	}()
-	_ = ws.WriteJSON(CoreUpgradeResp{
-		Status:  UpgradeStatusInfo,
-		Message: "Performing core upgrade",
-	})
-	// dry run
-	if control.DryRun || settings.ServerSettings.Demo {
-		return
-	}
-
-	// bye, will restart nginx-ui in performCoreUpgrade
-	err = u.PerformCoreUpgrade(tarName)
-	if err != nil {
-		_ = ws.WriteJSON(CoreUpgradeResp{
-			Status:  UpgradeStatusError,
-			Message: "Perform core upgrade error",
-		})
-		_ = ws.WriteJSON(CoreUpgradeResp{
-			Status:  UpgradeStatusError,
-			Message: err.Error(),
-		})
-		logger.Error(err)
-		return
+	if helper.InNginxUIOfficialDocker() && helper.DockerSocketExists() {
+		upgrader.DockerUpgrade(wsWriter, &control)
+	} else {
+		upgrader.BinaryUpgrade(wsWriter, &control)
 	}
 }

@@ -1,0 +1,430 @@
+package settings
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/0xJacky/Nginx-UI/internal/cache"
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
+	"github.com/0xJacky/Nginx-UI/internal/nodeauth"
+	internaluser "github.com/0xJacky/Nginx-UI/internal/user"
+	"github.com/0xJacky/Nginx-UI/internal/validation"
+	"github.com/0xJacky/Nginx-UI/model"
+	appsettings "github.com/0xJacky/Nginx-UI/settings"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	cSettings "github.com/uozi-tech/cosy/settings"
+)
+
+// TestMain registers the custom gin binding validators used by settings.Auth
+// and settings.Cert. Production wires this via internal/kernel/boot.go, which
+// these package-level tests bypass.
+func TestMain(m *testing.M) {
+	gin.SetMode(gin.TestMode)
+	validation.Init()
+	m.Run()
+}
+
+func TestSaveSettingsRejectsNegativeLogrotateInterval(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/settings",
+		bytes.NewBufferString(`{
+			"auth":{"ban_threshold_minutes":1,"max_attempts":1},
+			"cert":{"renewal_interval":7},
+			"logrotate":{"enabled":true,"interval":-1}
+		}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	SaveSettings(c)
+
+	assert.Equal(t, http.StatusNotAcceptable, w.Code)
+	assert.Contains(t, w.Body.String(), "\"interval\":\"min\"")
+}
+
+// TestSaveSettingsAcceptsRedactedAuthNetworks reproduces the reported bug where the
+// frontend round-trips the sensitive-field placeholder `__NGINX_UI_REDACTED__` back
+// to POST /api/settings. Without the `redacted` validator composed with the network
+// validators, the payload fails binding on the protected auth fields. With the fix,
+// the placeholders are accepted; another unrelated binding error still fires, so
+// the response is still 406 but must not mention either auth network field.
+func TestSaveSettingsAcceptsRedactedAuthNetworks(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/settings",
+		bytes.NewBufferString(`{
+			"auth":{"ip_white_list":["__NGINX_UI_REDACTED__"],"trusted_proxies":["__NGINX_UI_REDACTED__"],"ban_threshold_minutes":1,"max_attempts":1},
+			"cert":{"renewal_interval":7},
+			"logrotate":{"enabled":true,"interval":-1}
+		}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	SaveSettings(c)
+
+	assert.Equal(t, http.StatusNotAcceptable, w.Code)
+	assert.Contains(t, w.Body.String(), "\"interval\":\"min\"")
+	assert.NotContains(t, w.Body.String(), "ip_white_list")
+	assert.NotContains(t, w.Body.String(), "trusted_proxies")
+}
+
+func TestGetSettingsRedactsSensitiveFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	originalApp := *cSettings.AppSettings
+	originalAuth := *appsettings.AuthSettings
+	originalCasdoor := *appsettings.CasdoorSettings
+	originalCert := *appsettings.CertSettings
+	originalHTTP := *appsettings.HTTPSettings
+	originalLogrotate := *appsettings.LogrotateSettings
+	originalNginx := *appsettings.NginxSettings
+	originalNode := *appsettings.NodeSettings
+	originalOIDC := *appsettings.OIDCSettings
+	originalOpenAI := *appsettings.OpenAISettings
+	originalTerminal := *appsettings.TerminalSettings
+	defer func() {
+		*cSettings.AppSettings = originalApp
+		*appsettings.AuthSettings = originalAuth
+		*appsettings.CasdoorSettings = originalCasdoor
+		*appsettings.CertSettings = originalCert
+		*appsettings.HTTPSettings = originalHTTP
+		*appsettings.LogrotateSettings = originalLogrotate
+		*appsettings.NginxSettings = originalNginx
+		*appsettings.NodeSettings = originalNode
+		*appsettings.OIDCSettings = originalOIDC
+		*appsettings.OpenAISettings = originalOpenAI
+		*appsettings.TerminalSettings = originalTerminal
+	}()
+
+	cSettings.AppSettings.JwtSecret = "jwt-secret"
+	cSettings.AppSettings.PageSize = 50
+	appsettings.AuthSettings.IPWhiteList = []string{"192.0.2.1"}
+	appsettings.AuthSettings.TrustedProxies = []string{"127.0.0.1", "10.0.0.0/8"}
+	appsettings.CasdoorSettings.Endpoint = "https://casdoor.example.com"
+	appsettings.CasdoorSettings.ClientId = "casdoor-client-id"
+	appsettings.CasdoorSettings.ClientSecret = "casdoor-secret"
+	appsettings.CertSettings.Email = "admin@example.com"
+	appsettings.HTTPSettings.GithubProxy = "https://proxy.example.com"
+	appsettings.HTTPSettings.InsecureSkipVerify = true
+	appsettings.LogrotateSettings.CMD = "logrotate /etc/logrotate.d/nginx"
+	appsettings.NginxSettings.LogDirWhiteList = []string{"/var/log/nginx"}
+	appsettings.NginxSettings.ReloadCmd = "nginx -s reload"
+	appsettings.NginxSettings.RestartCmd = "nginx -s restart"
+	appsettings.NginxSettings.TestConfigCmd = "nginx -t"
+	appsettings.NginxSettings.ContainerName = "nginx-container"
+	appsettings.NodeSettings.Secret = "node-secret"
+	appsettings.NodeSettings.Name = "local-node"
+	appsettings.NodeSettings.SkipInstallation = true
+	appsettings.OIDCSettings.ClientId = "oidc-client-id"
+	appsettings.OIDCSettings.ClientSecret = "oidc-secret"
+	appsettings.OIDCSettings.Endpoint = "https://oidc.example.com"
+	appsettings.OpenAISettings.Token = "openai-secret"
+	appsettings.OpenAISettings.Model = "gpt-test"
+	appsettings.TerminalSettings.StartCmd = "login"
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+
+	GetSettings(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	assert.NoError(t, err)
+	assert.Equal(t, redactedSensitiveValue, body["app"]["jwt_secret"])
+	assert.Equal(t, float64(50), body["app"]["page_size"])
+	assert.Equal(t, redactedSensitiveValue, body["node"]["secret"])
+	assert.Equal(t, "local-node", body["node"]["name"])
+	assert.Equal(t, true, body["node"]["skip_installation"])
+	assert.Equal(t, redactedSensitiveValue, body["openai"]["token"])
+	assert.Equal(t, "gpt-test", body["openai"]["model"])
+	assert.Equal(t, "https://casdoor.example.com", body["casdoor"]["endpoint"])
+	assert.Equal(t, "casdoor-client-id", body["casdoor"]["client_id"])
+	assert.Equal(t, redactedSensitiveValue, body["casdoor"]["client_secret"])
+	assert.Equal(t, "oidc-client-id", body["oidc"]["client_id"])
+	assert.Equal(t, redactedSensitiveValue, body["oidc"]["client_secret"])
+	assert.Equal(t, "https://oidc.example.com", body["oidc"]["endpoint"])
+	assert.Equal(t, "admin@example.com", body["cert"]["email"])
+	assert.Equal(t, "https://proxy.example.com", body["http"]["github_proxy"])
+	assert.Equal(t, true, body["http"]["insecure_skip_verify"])
+	assert.Equal(t, "logrotate /etc/logrotate.d/nginx", body["logrotate"]["cmd"])
+	assert.Equal(t, "nginx -s reload", body["nginx"]["reload_cmd"])
+	assert.Equal(t, "nginx -s restart", body["nginx"]["restart_cmd"])
+	assert.Equal(t, "nginx -t", body["nginx"]["test_config_cmd"])
+	assert.Equal(t, []any{"/var/log/nginx"}, body["nginx"]["log_dir_white_list"])
+	assert.Equal(t, "nginx-container", body["nginx"]["container_name"])
+	assert.Equal(t, []any{"192.0.2.1"}, body["auth"]["ip_white_list"])
+	assert.Equal(t, []any{"127.0.0.1", "10.0.0.0/8"}, body["auth"]["trusted_proxies"])
+	assert.Equal(t, "login", body["terminal"]["start_cmd"])
+}
+
+func TestBuildNginxSettingsResponseDoesNotPersistDerivedDefaults(t *testing.T) {
+	originalNginx := *appsettings.NginxSettings
+	defer func() {
+		*appsettings.NginxSettings = originalNginx
+	}()
+
+	appsettings.NginxSettings.AccessLogPath = "/var/log/nginx/access.log"
+	appsettings.NginxSettings.ErrorLogPath = "/var/log/nginx/error.log"
+	appsettings.NginxSettings.ConfigDir = "/etc/nginx"
+	appsettings.NginxSettings.PIDPath = "/run/nginx.pid"
+	appsettings.NginxSettings.SbinPath = "/usr/sbin/nginx"
+	appsettings.NginxSettings.ReloadCmd = ""
+	appsettings.NginxSettings.RestartCmd = ""
+	appsettings.NginxSettings.StubStatusPort = 0
+	appsettings.NginxSettings.ContainerName = ""
+
+	response := buildNginxSettingsResponse()
+
+	assert.Equal(t, "nginx -s reload", response["reload_cmd"])
+	assert.Equal(t,
+		"start-stop-daemon --start --quiet --pidfile /run/nginx.pid --exec /usr/sbin/nginx",
+		response["restart_cmd"])
+	assert.Equal(t, uint(51820), response["stub_status_port"])
+	assert.Empty(t, appsettings.NginxSettings.ReloadCmd)
+	assert.Empty(t, appsettings.NginxSettings.RestartCmd)
+	assert.Zero(t, appsettings.NginxSettings.StubStatusPort)
+}
+
+func TestProtectedNginxCommandsCannotBeOverwrittenBySettingsPayload(t *testing.T) {
+	originalNginx := *appsettings.NginxSettings
+	defer func() {
+		*appsettings.NginxSettings = originalNginx
+	}()
+
+	appsettings.NginxSettings.TestConfigCmd = "nginx -t"
+	appsettings.NginxSettings.ReloadCmd = "nginx -s reload"
+	appsettings.NginxSettings.RestartCmd = "nginx -s restart"
+
+	payload := saveSettingsPayload{
+		Nginx: appsettings.Nginx{
+			TestConfigCmd: "touch /tmp/test-config-injection",
+			ReloadCmd:     "touch /tmp/reload-injection",
+			RestartCmd:    "touch /tmp/restart-injection",
+		},
+	}
+
+	cSettings.ProtectedFill(appsettings.NginxSettings, &payload.Nginx)
+
+	assert.Equal(t, "nginx -t", appsettings.NginxSettings.TestConfigCmd)
+	assert.Equal(t, "nginx -s reload", appsettings.NginxSettings.ReloadCmd)
+	assert.Equal(t, "nginx -s restart", appsettings.NginxSettings.RestartCmd)
+}
+
+func TestRestoreRedactedSensitiveSettings(t *testing.T) {
+	originalJWTSecret := cSettings.AppSettings.JwtSecret
+	originalNodeSecret := appsettings.NodeSettings.Secret
+	originalOpenAIToken := appsettings.OpenAISettings.Token
+	defer func() {
+		cSettings.AppSettings.JwtSecret = originalJWTSecret
+		appsettings.NodeSettings.Secret = originalNodeSecret
+		appsettings.OpenAISettings.Token = originalOpenAIToken
+	}()
+
+	cSettings.AppSettings.JwtSecret = "jwt-secret"
+	appsettings.NodeSettings.Secret = "node-secret"
+	appsettings.OpenAISettings.Token = "openai-secret"
+
+	payload := saveSettingsPayload{}
+	payload.App.JwtSecret = redactedSensitiveValue
+	payload.Node.Secret = redactedSensitiveValue
+	payload.Openai.Token = redactedSensitiveValue
+
+	restoreRedactedSensitiveSettings(&payload)
+
+	assert.Equal(t, "jwt-secret", payload.App.JwtSecret)
+	assert.Equal(t, "node-secret", payload.Node.Secret)
+	assert.Equal(t, "openai-secret", payload.Openai.Token)
+}
+
+func TestGetProtectedSetting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cache.InitInMemoryCache()
+	defer cache.Shutdown()
+
+	originalJWTSecret := cSettings.AppSettings.JwtSecret
+	originalCasdoor := *appsettings.CasdoorSettings
+	originalNodeSecret := appsettings.NodeSettings.Secret
+	originalOIDC := *appsettings.OIDCSettings
+	originalOpenAIToken := appsettings.OpenAISettings.Token
+	defer func() {
+		cSettings.AppSettings.JwtSecret = originalJWTSecret
+		*appsettings.CasdoorSettings = originalCasdoor
+		appsettings.NodeSettings.Secret = originalNodeSecret
+		*appsettings.OIDCSettings = originalOIDC
+		appsettings.OpenAISettings.Token = originalOpenAIToken
+	}()
+	cSettings.AppSettings.JwtSecret = "jwt-secret"
+	appsettings.CasdoorSettings.ClientSecret = "casdoor-secret"
+	appsettings.NodeSettings.Secret = "node-secret"
+	appsettings.OIDCSettings.ClientSecret = "oidc-secret"
+	appsettings.OpenAISettings.Token = "openai-secret"
+
+	t.Run("rejects missing secure session", func(t *testing.T) {
+		r := gin.New()
+		r.GET("/api/settings/protected", func(c *gin.Context) {
+			c.Set("user", &model.User{
+				Model:     model.Model{ID: 1},
+				OTPSecret: []byte("otp-enabled"),
+			})
+		}, middleware.RequireSecureSession(), GetProtectedSetting)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/protected?path=app.jwt_secret", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("rejects node secret authentication", func(t *testing.T) {
+		r := gin.New()
+		r.GET("/api/settings/protected", func(c *gin.Context) {
+			c.Set("user", &model.User{
+				Model:     model.Model{ID: 1},
+				OTPSecret: []byte("otp-enabled"),
+			})
+			c.Set(nodeauth.GinPrincipalKey, &nodeauth.Principal{AuthMethod: model.NodeAuthMethodLegacy})
+		}, middleware.RequireSecureSession(), GetProtectedSetting)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/protected?path=app.jwt_secret", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("rejects users without 2fa", func(t *testing.T) {
+		r := gin.New()
+		r.GET("/api/settings/protected", func(c *gin.Context) {
+			c.Set("user", &model.User{
+				Model: model.Model{ID: 5},
+			})
+		}, middleware.RequireSecureSession(), GetProtectedSetting)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/protected?path=app.jwt_secret", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("rejects invalid path", func(t *testing.T) {
+		r := gin.New()
+		r.GET("/api/settings/protected", func(c *gin.Context) {
+			user := &model.User{
+				Model:     model.Model{ID: 2},
+				OTPSecret: []byte("otp-enabled"),
+			}
+			c.Set("user", user)
+		}, middleware.RequireSecureSession(), GetProtectedSetting)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/protected?path=node.name", nil)
+		req.Header.Set("X-Secure-Session-ID", internaluser.SetSecureSessionID(2))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("rejects non-sensitive protected path", func(t *testing.T) {
+		r := gin.New()
+		r.GET("/api/settings/protected", func(c *gin.Context) {
+			user := &model.User{
+				Model:     model.Model{ID: 7},
+				OTPSecret: []byte("otp-enabled"),
+			}
+			c.Set("user", user)
+		}, middleware.RequireSecureSession(), GetProtectedSetting)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/protected?path=nginx.reload_cmd", nil)
+		req.Header.Set("X-Secure-Session-ID", internaluser.SetSecureSessionID(7))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("returns protected value", func(t *testing.T) {
+		r := gin.New()
+		r.GET("/api/settings/protected", func(c *gin.Context) {
+			user := &model.User{
+				Model:     model.Model{ID: 3},
+				OTPSecret: []byte("otp-enabled"),
+			}
+			c.Set("user", user)
+		}, middleware.RequireSecureSession(), GetProtectedSetting)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/settings/protected?path=app.jwt_secret", nil)
+		req.Header.Set("X-Secure-Session-ID", internaluser.SetSecureSessionID(3))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		var body map[string]string
+		err := json.Unmarshal(w.Body.Bytes(), &body)
+		assert.NoError(t, err)
+		assert.Equal(t, "jwt-secret", body["value"])
+	})
+
+	t.Run("returns reflected protected values", func(t *testing.T) {
+		testCases := map[string]string{
+			"casdoor.client_secret": "casdoor-secret",
+			"node.secret":           "node-secret",
+			"oidc.client_secret":    "oidc-secret",
+			"openai.token":          "openai-secret",
+		}
+
+		for path, want := range testCases {
+			t.Run(path, func(t *testing.T) {
+				r := gin.New()
+				r.GET("/api/settings/protected", func(c *gin.Context) {
+					user := &model.User{
+						Model:     model.Model{ID: 6},
+						OTPSecret: []byte("otp-enabled"),
+					}
+					c.Set("user", user)
+				}, middleware.RequireSecureSession(), GetProtectedSetting)
+
+				req := httptest.NewRequest(http.MethodGet, "/api/settings/protected?path="+path, nil)
+				req.Header.Set("X-Secure-Session-ID", internaluser.SetSecureSessionID(6))
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, req)
+
+				assert.Equal(t, http.StatusOK, w.Code)
+
+				var body map[string]string
+				err := json.Unmarshal(w.Body.Bytes(), &body)
+				assert.NoError(t, err)
+				assert.Equal(t, want, body["value"])
+			})
+		}
+	})
+}
+
+func TestRemoveBannedIPRequiresSecureSessionForOTPUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	group := r.Group("/api", func(c *gin.Context) {
+		c.Set("user", &model.User{
+			Model:     model.Model{ID: 4},
+			OTPSecret: []byte("otp-enabled"),
+		})
+		c.Next()
+	})
+	InitRouter(group)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/settings/auth/banned_ip", bytes.NewBufferString(`{"ip":"192.0.2.1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}

@@ -9,11 +9,11 @@
 
 ## 使用前注意
 
-Nginx UI 遵循 Debian 的網頁伺服器配置檔案標準。建立的網站配置檔案將會放置於 Nginx
-配置資料夾（自動檢測）下的 `sites-available` 中，啟用後的網站將會建立一份配置檔案軟連結檔到 `sites-enabled`
-資料夾。您可能需要提前調整配置檔案的組織方式。
+Nginx UI 遵循 Debian 的網頁伺服器設定檔案標準。建立的網站設定檔案將會放置於 Nginx
+設定資料夾（自動偵測）下的 `sites-available` 中，啟用後的網站將會建立一份設定檔案軟連結檔到 `sites-enabled`
+資料夾。您可能需要提前調整設定檔案的組織方式。
 
-對於非 Debian (及 Ubuntu) 作業系統，您可能需要將 `nginx.conf` 配置檔案中的內容修改為如下所示的 Debian 風格。
+對於非 Debian (及 Ubuntu) 作業系統，您可能需要將 `nginx.conf` 設定檔案中的內容修改為如下所示的 Debian 風格。
 
 ```nginx
 http {
@@ -23,27 +23,108 @@ http {
 }
 ```
 
-更多資訊請參閱：[debian/conf/nginx.conf](https://salsa.debian.org/nginx-team/nginx/-/blob/master/debian/conf/nginx.conf#L59-L60)
+更多資訊請參閱：[debian/conf/nginx.conf](https://salsa.debian.org/nginx-team/nginx/-/blob/debian/latest/debian/conf/nginx.conf#L60-L61)
 
 ## 安裝
 
-我們建議Linux使用者使用 [安裝指令碼](./install-script-linux)，這樣您可以直接控制主機上的 Nginx。您也可以透過 [Docker 安裝](#使用-docker)，
-我們提供的映象包含 Nginx 並可以直接使用。對於高階使用者，您也可以在 [最新發行 (latest release)](https://github.com/0xJacky/nginx-ui/releases/latest)
-中下載最新版本並 [透過執行檔案執行](#透過執行檔案執行)，或者 [手動構建](./build)。
+我們提供多種安裝方式以滿足不同需求：
 
-第一次執行 Nginx UI 時，請在瀏覽器中訪問 `http://<your_server_ip>:<listen_port>` 完成後續配置。
+- **macOS/Linux**: 使用 [Homebrew](./install-homebrew) 最簡單的安裝方式
+- **Windows**: 使用 [Winget](./install-winget) Windows 套件管理員安裝
+- **Linux**: 使用 [安裝指令碼](./install-script-linux) 直接控制主機上的 Nginx
+- **Docker**: 透過 [Docker 安裝](#使用-docker) 使用我們提供的包含 Nginx 的映象
+- **高階使用者**: 從 [最新發行版](https://github.com/0xJacky/nginx-ui/releases/latest) 下載並 [透過執行檔案執行](#透過執行檔案執行)，或者 [手動建構](./build)
 
-此外，我們提供了一個使用 Nginx 反向代理 Nginx UI 的 [示例](./nginx-proxy-example)，您可在安裝完成後使用。
+第一次執行 Nginx UI 時，請在瀏覽器中存取 `http://<your_server_ip>:<listen_port>` 完成後續設定。
 
+此外，我們提供了一個使用 Nginx 反向代理 Nginx UI 的 [範例](./nginx-proxy-example)，您可在安裝完成後使用。
+
+### 取得安裝 Secret
+
+首次啟動時，Nginx UI 會要求輸入一次性的安裝 Secret，網頁安裝流程才能繼續。
+這個 Secret 會儲存在與 `app.ini` 同目錄下的隱藏檔案 `.install_secret` 中。
+
+不同安裝方式下，取得 Secret 的方式如下：
+
+- **Linux 安裝指令碼**：指令碼會在服務啟動後直接把 Secret 列印到終端機。如果錯過了，可以讀取 `$DATA_PATH/.install_secret`，預設路徑為 `/usr/local/etc/nginx-ui/.install_secret`。
+- **Homebrew**：在 `app.ini` 所在目錄讀取 `.install_secret`，例如 `/opt/homebrew/etc/nginx-ui/.install_secret`、`/usr/local/etc/nginx-ui/.install_secret` 或 `/home/linuxbrew/.linuxbrew/etc/nginx-ui/.install_secret`。
+- **Docker / Docker Compose**：在主機上映射到 `/etc/nginx-ui` 的目錄中讀取 `.install_secret`。如果沒有掛載該目錄，可以執行 `docker exec <容器名稱> cat /etc/nginx-ui/.install_secret`。
+- **Winget**：在 `app.ini` 所在目錄讀取 `.install_secret`，通常是 `%LOCALAPPDATA%\nginx-ui\.install_secret` 或 `C:\ProgramData\nginx-ui\.install_secret`。
+- **直接執行可執行檔 / 手動建構**：在透過 `-config` 指定的設定檔所在目錄讀取 `.install_secret`。
+
+這個 Secret 只在首次安裝視窗期間有效；安裝完成或逾時後會自動刪除。
+
+## 使用 Homebrew 安裝
+
+對於 macOS 和 Linux 使用者，您可以使用 Homebrew 安裝 Nginx UI，這是最簡單的安裝方式。
+
+::: tip 提示
+
+此安裝方式適用於 macOS 和 Linux。對於其他作業系統，請使用其他安裝方式。
+
+:::
+
+### 安裝
+
+```bash
+brew install 0xjacky/tools/nginx-ui
+```
+
+### 啟動服務
+
+```bash
+# 啟動服務
+brew services start nginx-ui
+
+# 或者在前台執行
+nginx-ui
+```
+
+### 停止服務
+
+```bash
+brew services stop nginx-ui
+```
+
+### 升級
+
+```bash
+brew upgrade nginx-ui
+```
+
+### 解除安裝
+
+```bash
+# 首先停止服務
+brew services stop nginx-ui
+
+# 解除安裝軟體包
+brew uninstall nginx-ui
+
+# 可選：移除 tap
+brew untap 0xjacky/tools
+```
+
+::: warning 警告
+
+解除安裝後，設定檔案和資料將保留在：
+- **macOS**: `~/Library/Application Support/nginx-ui/`
+- **Linux**: `~/.local/share/nginx-ui/` 或 `~/.config/nginx-ui/`
+
+如果您想要完全刪除所有資料，請手動刪除這些目錄。
+
+:::
 
 ## 使用 Docker
 
 您可以在 docker 中使用我們提供的 `uozi/nginx-ui:latest` [映像檔](https://hub.docker.com/r/uozi/nginx-ui)
-，此映像檔基於 `nginx:latest` 構建。您可以直接將其監聽到 80 和 443 埠以取代宿主機上的 Nginx。
+，此映像檔基於 `nginx:latest` 建構。您可以直接將其監聽到 80 和 443 連接埠以取代宿主機上的 Nginx。
 
 ::: tip 提示
 
-預設情況下，Nginx UI 會被反向代理到容器的 `8080` 埠。
+官方 Docker 映像檔會監聽容器的 `80` 和 `443` 連接埠。
+對容器 `80` 連接埠的請求會被反向代理到 `127.0.0.1:9000` 上的 Nginx UI 後端。
+請透過對映到容器 `80` 連接埠的主機連接埠存取 Nginx UI。
 首次使用時，對映到 `/etc/nginx` 的目錄必須為空資料夾。
 如果你想要託管靜態檔案，可以直接將資料夾對映入容器中。
 
@@ -56,7 +137,7 @@ http {
 
 :::
 
-### Docker 部署示例
+### Docker 部署範例
 
 ```bash
 docker run -dit \
@@ -66,27 +147,28 @@ docker run -dit \
   -v /mnt/user/appdata/nginx:/etc/nginx \
   -v /mnt/user/appdata/nginx-ui:/etc/nginx-ui \
   -v /var/www:/var/www \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   -p 8080:80 -p 8443:443 \
   uozi/nginx-ui:latest
 ```
 
-在這個示例中，容器的`80`埠和`443`埠分別映射到主機的`8080`埠和`8443`埠。
-您需要訪問`http://<your_server_ip>:8080`來訪問 Nginx UI。
+在這個範例中，容器的`80`連接埠和`443`連接埠分別對映到主機的`8080`連接埠和`8443`連接埠。
+您需要存取`http://<your_server_ip>:8080`來存取 Nginx UI。
 
 ## 透過執行檔案執行
 
 不建議直接執行 Nginx UI 可執行檔案用於非測試目的。
-我們建議在 Linux 上將其配置為守護程序或使用 [安裝指令碼](./install-script-linux)。
+我們建議在 Linux 上將其設定為守護程式或使用 [安裝指令碼](./install-script-linux)。
 
-### 配置
+### 設定
 
 ```shell
-echo '[server]\nHttpPort = 9000' > app.ini
+echo '[server]\nPort = 9000' > app.ini
 ```
 
 ::: tip 提示
 
-在沒有 `app.ini` 時 Nginx UI 仍然可以啟動，它將使用預設偵聽埠 `9000`。
+在沒有 `app.ini` 時 Nginx UI 仍然可以啟動，它將使用預設偵聽連接埠 `9000`。
 
 :::
 

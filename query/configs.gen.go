@@ -28,12 +28,13 @@ func newConfig(db *gorm.DB, opts ...gen.DOOption) config {
 
 	tableName := _config.configDo.TableName()
 	_config.ALL = field.NewAsterisk(tableName)
-	_config.ID = field.NewInt(tableName, "id")
+	_config.ID = field.NewUint64(tableName, "id")
 	_config.CreatedAt = field.NewTime(tableName, "created_at")
 	_config.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_config.DeletedAt = field.NewField(tableName, "deleted_at")
 	_config.Name = field.NewString(tableName, "name")
 	_config.Filepath = field.NewString(tableName, "filepath")
+	_config.IsDir = field.NewBool(tableName, "is_dir")
 	_config.SyncNodeIds = field.NewField(tableName, "sync_node_ids")
 	_config.SyncOverwrite = field.NewBool(tableName, "sync_overwrite")
 
@@ -46,12 +47,13 @@ type config struct {
 	configDo
 
 	ALL           field.Asterisk
-	ID            field.Int
+	ID            field.Uint64
 	CreatedAt     field.Time
 	UpdatedAt     field.Time
 	DeletedAt     field.Field
 	Name          field.String
 	Filepath      field.String
+	IsDir         field.Bool
 	SyncNodeIds   field.Field
 	SyncOverwrite field.Bool
 
@@ -70,12 +72,13 @@ func (c config) As(alias string) *config {
 
 func (c *config) updateTableName(table string) *config {
 	c.ALL = field.NewAsterisk(table)
-	c.ID = field.NewInt(table, "id")
+	c.ID = field.NewUint64(table, "id")
 	c.CreatedAt = field.NewTime(table, "created_at")
 	c.UpdatedAt = field.NewTime(table, "updated_at")
 	c.DeletedAt = field.NewField(table, "deleted_at")
 	c.Name = field.NewString(table, "name")
 	c.Filepath = field.NewString(table, "filepath")
+	c.IsDir = field.NewBool(table, "is_dir")
 	c.SyncNodeIds = field.NewField(table, "sync_node_ids")
 	c.SyncOverwrite = field.NewBool(table, "sync_overwrite")
 
@@ -94,13 +97,14 @@ func (c *config) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (c *config) fillFieldMap() {
-	c.fieldMap = make(map[string]field.Expr, 8)
+	c.fieldMap = make(map[string]field.Expr, 9)
 	c.fieldMap["id"] = c.ID
 	c.fieldMap["created_at"] = c.CreatedAt
 	c.fieldMap["updated_at"] = c.UpdatedAt
 	c.fieldMap["deleted_at"] = c.DeletedAt
 	c.fieldMap["name"] = c.Name
 	c.fieldMap["filepath"] = c.Filepath
+	c.fieldMap["is_dir"] = c.IsDir
 	c.fieldMap["sync_node_ids"] = c.SyncNodeIds
 	c.fieldMap["sync_overwrite"] = c.SyncOverwrite
 }
@@ -118,7 +122,7 @@ func (c config) replaceDB(db *gorm.DB) config {
 type configDo struct{ gen.DO }
 
 // FirstByID Where("id=@id")
-func (c configDo) FirstByID(id int) (result *model.Config, err error) {
+func (c configDo) FirstByID(id uint64) (result *model.Config, err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder
@@ -133,7 +137,7 @@ func (c configDo) FirstByID(id int) (result *model.Config, err error) {
 }
 
 // DeleteByID update @@table set deleted_at=strftime('%Y-%m-%d %H:%M:%S','now') where id=@id
-func (c configDo) DeleteByID(id int) (err error) {
+func (c configDo) DeleteByID(id uint64) (err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder

@@ -1,36 +1,58 @@
 package certificate
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
+	"github.com/gin-gonic/gin"
+)
 
 func InitDNSCredentialRouter(r *gin.RouterGroup) {
 	r.GET("dns_credentials", GetDnsCredentialList)
-	r.GET("dns_credential/:id", GetDnsCredential)
-	r.POST("dns_credential", AddDnsCredential)
-	r.POST("dns_credential/:id", EditDnsCredential)
-	r.DELETE("dns_credential/:id", DeleteDnsCredential)
+	r.GET("dns_credentials/:id", GetDnsCredential)
+	o := r.Group("", middleware.RequireSecureSession())
+	{
+		o.POST("dns_credentials", AddDnsCredential)
+		o.POST("dns_credentials/:id", EditDnsCredential)
+		o.DELETE("dns_credentials/:id", DeleteDnsCredential)
+	}
 }
 
 func InitCertificateRouter(r *gin.RouterGroup) {
 	r.GET("certs", GetCertList)
-	r.GET("cert/:id", GetCert)
-	r.POST("cert", AddCert)
-	r.POST("cert/:id", ModifyCert)
-	r.DELETE("cert/:id", RemoveCert)
-	r.PUT("cert_sync", SyncCertificate)
+	r.GET("certs/:id", GetCert)
 	r.GET("certificate/dns_providers", GetDNSProvidersList)
 	r.GET("certificate/dns_provider/:code", GetDNSProvider)
+	o := r.Group("", middleware.RequireSecureSession())
+	{
+		o.POST("certs", AddCert)
+		o.POST("certs/:id", ModifyCert)
+		o.DELETE("certs/:id", RemoveCert)
+		o.POST("cert_import", ImportExistingCert)
+		o.POST("cert_discover_new", DiscoverNewCerts)
+		o.PUT("cert_sync", SyncCertificate)
+		o.POST("self_signed_cert", GenerateSelfSignedCert)
+		o.POST("self_signed_cert/:id", ModifySelfSignedCert)
+	}
 }
 
 func InitCertificateWebSocketRouter(r *gin.RouterGroup) {
-	r.GET("domain/:name/cert", IssueCert)
+	// Issuing and revoking talk to a real ACME CA, so they stay closed in demo mode.
+	o := r.Group("", middleware.RequireSecureSession(), middleware.RejectInDemo())
+	{
+		o.GET("domain/:name/cert", IssueCert)
+		o.GET("certs/:id/revoke", RevokeCert)
+	}
 }
 
 func InitAcmeUserRouter(r *gin.RouterGroup) {
 	r.GET("acme_users", GetAcmeUserList)
-	r.GET("acme_user/:id", GetAcmeUser)
-	r.POST("acme_user", CreateAcmeUser)
-	r.POST("acme_user/:id", ModifyAcmeUser)
-	r.POST("acme_user/:id/register", RegisterAcmeUser)
-	r.DELETE("acme_user/:id", DestroyAcmeUser)
-	r.PATCH("acme_user/:id", RecoverAcmeUser)
+	r.GET("acme_users/:id", GetAcmeUser)
+	o := r.Group("", middleware.RequireSecureSession())
+	{
+		o.POST("acme_users", CreateAcmeUser)
+		o.POST("acme_users/:id", ModifyAcmeUser)
+		// Registration creates an account on the upstream CA.
+		o.POST("acme_users/:id/register", middleware.RejectInDemo(), RegisterAcmeUser)
+		o.DELETE("acme_users/:id", DestroyAcmeUser)
+		o.PATCH("acme_users/:id", RecoverAcmeUser)
+	}
 }

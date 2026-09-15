@@ -1,18 +1,32 @@
-import http from '@/lib/http'
+import { http } from '@uozi-admin/request'
 
 export interface InstallRequest {
   email: string
   username: string
   password: string
-  database: string
+}
+
+function installSecretHeaders(installSecret: string) {
+  return {
+    'X-Install-Secret': installSecret,
+  }
+}
+
+export interface InstallLockResponse {
+  lock: boolean
+  timeout: boolean
 }
 
 const install = {
   get_lock() {
-    return http.get('/install')
+    return http.get<InstallLockResponse>('/install')
   },
-  install_nginx_ui(data: InstallRequest) {
-    return http.post('/install', data)
+  install_nginx_ui(data: InstallRequest, installSecret: string) {
+    return http.post('/setup/install', data, {
+      crypto: true,
+      headers: installSecretHeaders(installSecret),
+      skipAuthRedirect: true,
+    })
   },
 }
 

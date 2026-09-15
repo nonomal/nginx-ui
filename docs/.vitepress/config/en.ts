@@ -1,12 +1,13 @@
-import {LocaleSpecificConfig, DefaultTheme} from 'vitepress'
-import {demoUrl} from './common'
+import { LocaleSpecificConfig, DefaultTheme } from 'vitepress'
+import { demoUrl } from './common'
 
 export const enConfig: LocaleSpecificConfig<DefaultTheme.Config> = {
   themeConfig: {
     nav: [
-      {text: 'Home', link: '/'},
-      {text: 'Guide', link: '/guide/about'},
-      {text: 'Demo', link: demoUrl}
+      { text: 'Home', link: '/' },
+      { text: 'Guide', link: '/guide/about' },
+      { text: 'Sponsor', link: '/sponsor' },
+      { text: 'Demo', link: demoUrl }
     ],
 
     sidebar: {
@@ -15,49 +16,91 @@ export const enConfig: LocaleSpecificConfig<DefaultTheme.Config> = {
           text: 'Introduction',
           collapsed: false,
           items: [
-            {text: 'What is Nginx UI?', link: '/guide/about'},
-            {text: 'Getting Started', link: '/guide/getting-started'},
-            {text: 'Install Script', link: '/guide/install-script-linux'}
+            { text: 'What is Nginx UI?', link: '/guide/about' },
+            { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Install with Homebrew', link: '/guide/install-homebrew' },
+            { text: 'Install with Winget', link: '/guide/install-winget' },
+            { text: 'Install Script', link: '/guide/install-script-linux' },
+            { text: 'Install on Kubernetes', link: '/guide/install-kubernetes' },
+            { text: 'Install on OpenWrt', link: '/guide/install-openwrt' },
+            { text: 'Install on Unraid', link: '/guide/install-unraid' }
+          ]
+        },
+        {
+          text: 'Deployment',
+          collapsed: false,
+          items: [
+            { text: 'Manage Host Nginx from Docker', link: '/guide/manage-host-nginx-from-docker' },
+            { text: 'Manage Multi-Host Nginx with Cluster', link: '/guide/manage-multi-host-nginx-with-cluster' }
           ]
         },
         {
           text: 'Development',
           collapsed: false,
           items: [
-            {text: 'Build', link: '/guide/build'},
-            {text: 'Project Structure', link: '/guide/project-structure'},
-            {text: 'Config Template', link: '/guide/nginx-ui-template'},
-            {text: 'Contributing', link: '/guide/contributing'}
+            { text: 'Devcontainer', link: '/guide/devcontainer' },
+            { text: 'Build', link: '/guide/build' },
+            { text: 'Project Structure', link: '/guide/project-structure' },
+            { text: 'Config Template', link: '/guide/nginx-ui-template' },
+            { text: 'Translation', link: '/guide/dev-translate' },
+            { text: 'Contributing', link: '/guide/contributing' }
+          ]
+        },
+        {
+          text: 'MCP',
+          collapsed: false,
+          items: [
+            { text: 'Overview', link: '/guide/mcp' },
+            { text: 'Configuration Management', link: '/guide/mcp-config' },
+            { text: 'Nginx Service Management', link: '/guide/mcp-nginx' },
+          ]
+        },
+        {
+          text: 'Automation',
+          collapsed: false,
+          items: [
+            { text: 'Command Line Interface', link: '/guide/cli' },
           ]
         },
         {
           text: 'Configuration',
           collapsed: false,
           items: [
-            {text: 'Server', link: '/guide/config-server'},
-            {text: 'Nginx', link: '/guide/config-nginx'},
-            {text: 'Open AI', link: '/guide/config-openai'},
-            {text: 'Casdoor', link: '/guide/config-casdoor'},
-            {text: 'Logrotate', link: '/guide/config-logrotate'},
-            {text: 'Cluster', link: '/guide/config-cluster'},
-            {text: 'Auth', link: '/guide/config-auth'},
-            {text: 'Crypto', link: '/guide/config-crypto'},
-            {text: 'Webauthn', link: '/guide/config-webauthn'}
+            { text: 'App', link: '/guide/config-app' },
+            { text: 'Auth', link: '/guide/config-auth' },
+            { text: 'Backup', link: '/guide/config-backup' },
+            { text: 'Casdoor', link: '/guide/config-casdoor' },
+            { text: 'Cert', link: '/guide/config-cert' },
+            { text: 'Cluster', link: '/guide/config-cluster' },
+            { text: 'Crypto', link: '/guide/config-crypto' },
+            { text: 'Database', link: '/guide/config-database' },
+            { text: 'Http', link: '/guide/config-http' },
+            { text: 'Logrotate', link: '/guide/config-logrotate' },
+            { text: 'Nginx', link: '/guide/config-nginx' },
+            { text: 'Nginx Log', link: '/guide/config-nginx-log' },
+            { text: 'Node', link: '/guide/config-node' },
+            { text: 'Open AI', link: '/guide/config-openai' },
+            { text: 'Server', link: '/guide/config-server' },
+            { text: 'Site Check', link: '/guide/config-sitecheck' },
+            { text: 'Terminal', link: '/guide/config-terminal' },
+            { text: 'Webauthn', link: '/guide/config-webauthn' }
           ]
         },
         {
           text: 'Environment Variables',
           collapsed: false,
           items: [
-            {text: 'Reference', link: '/guide/env'},
+            { text: 'Reference', link: '/guide/env' },
           ]
         },
         {
           text: 'Appendix',
           collapsed: false,
           items: [
-            {text: 'Nginx Proxy Example', link: '/guide/nginx-proxy-example'},
-            {text: 'License', link: '/guide/license'}
+            { text: 'Docker WebSocket Fix', link: '/guide/docker-websocket-fix' },
+            { text: 'Nginx Proxy Example', link: '/guide/nginx-proxy-example' },
+            { text: 'Reset Password', link: '/guide/reset-password' },
+            { text: 'License', link: '/guide/license' }
           ]
         }
       ]

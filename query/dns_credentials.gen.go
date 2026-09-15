@@ -28,13 +28,14 @@ func newDnsCredential(db *gorm.DB, opts ...gen.DOOption) dnsCredential {
 
 	tableName := _dnsCredential.dnsCredentialDo.TableName()
 	_dnsCredential.ALL = field.NewAsterisk(tableName)
-	_dnsCredential.ID = field.NewInt(tableName, "id")
+	_dnsCredential.ID = field.NewUint64(tableName, "id")
 	_dnsCredential.CreatedAt = field.NewTime(tableName, "created_at")
 	_dnsCredential.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_dnsCredential.DeletedAt = field.NewField(tableName, "deleted_at")
 	_dnsCredential.Name = field.NewString(tableName, "name")
 	_dnsCredential.Config = field.NewField(tableName, "config")
 	_dnsCredential.Provider = field.NewString(tableName, "provider")
+	_dnsCredential.ProviderCode = field.NewString(tableName, "provider_code")
 
 	_dnsCredential.fillFieldMap()
 
@@ -44,14 +45,15 @@ func newDnsCredential(db *gorm.DB, opts ...gen.DOOption) dnsCredential {
 type dnsCredential struct {
 	dnsCredentialDo
 
-	ALL       field.Asterisk
-	ID        field.Int
-	CreatedAt field.Time
-	UpdatedAt field.Time
-	DeletedAt field.Field
-	Name      field.String
-	Config    field.Field
-	Provider  field.String
+	ALL          field.Asterisk
+	ID           field.Uint64
+	CreatedAt    field.Time
+	UpdatedAt    field.Time
+	DeletedAt    field.Field
+	Name         field.String
+	Config       field.Field
+	Provider     field.String
+	ProviderCode field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -68,13 +70,14 @@ func (d dnsCredential) As(alias string) *dnsCredential {
 
 func (d *dnsCredential) updateTableName(table string) *dnsCredential {
 	d.ALL = field.NewAsterisk(table)
-	d.ID = field.NewInt(table, "id")
+	d.ID = field.NewUint64(table, "id")
 	d.CreatedAt = field.NewTime(table, "created_at")
 	d.UpdatedAt = field.NewTime(table, "updated_at")
 	d.DeletedAt = field.NewField(table, "deleted_at")
 	d.Name = field.NewString(table, "name")
 	d.Config = field.NewField(table, "config")
 	d.Provider = field.NewString(table, "provider")
+	d.ProviderCode = field.NewString(table, "provider_code")
 
 	d.fillFieldMap()
 
@@ -91,7 +94,7 @@ func (d *dnsCredential) GetFieldByName(fieldName string) (field.OrderExpr, bool)
 }
 
 func (d *dnsCredential) fillFieldMap() {
-	d.fieldMap = make(map[string]field.Expr, 7)
+	d.fieldMap = make(map[string]field.Expr, 8)
 	d.fieldMap["id"] = d.ID
 	d.fieldMap["created_at"] = d.CreatedAt
 	d.fieldMap["updated_at"] = d.UpdatedAt
@@ -99,6 +102,7 @@ func (d *dnsCredential) fillFieldMap() {
 	d.fieldMap["name"] = d.Name
 	d.fieldMap["config"] = d.Config
 	d.fieldMap["provider"] = d.Provider
+	d.fieldMap["provider_code"] = d.ProviderCode
 }
 
 func (d dnsCredential) clone(db *gorm.DB) dnsCredential {
@@ -114,7 +118,7 @@ func (d dnsCredential) replaceDB(db *gorm.DB) dnsCredential {
 type dnsCredentialDo struct{ gen.DO }
 
 // FirstByID Where("id=@id")
-func (d dnsCredentialDo) FirstByID(id int) (result *model.DnsCredential, err error) {
+func (d dnsCredentialDo) FirstByID(id uint64) (result *model.DnsCredential, err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder
@@ -129,7 +133,7 @@ func (d dnsCredentialDo) FirstByID(id int) (result *model.DnsCredential, err err
 }
 
 // DeleteByID update @@table set deleted_at=strftime('%Y-%m-%d %H:%M:%S','now') where id=@id
-func (d dnsCredentialDo) DeleteByID(id int) (err error) {
+func (d dnsCredentialDo) DeleteByID(id uint64) (err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder

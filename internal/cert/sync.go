@@ -3,18 +3,17 @@ package cert
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"github.com/0xJacky/Nginx-UI/internal/helper"
-	"github.com/0xJacky/Nginx-UI/internal/logger"
-	"github.com/0xJacky/Nginx-UI/internal/nginx"
-	"github.com/0xJacky/Nginx-UI/internal/notification"
-	"github.com/0xJacky/Nginx-UI/internal/transport"
-	"github.com/0xJacky/Nginx-UI/model"
-	"github.com/0xJacky/Nginx-UI/query"
-	"github.com/go-acme/lego/v4/certcrypto"
 	"io"
 	"net/http"
-	"os"
+
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/internal/nginx"
+	"github.com/0xJacky/Nginx-UI/internal/nodeauth"
+	"github.com/0xJacky/Nginx-UI/internal/notification"
+	"github.com/0xJacky/Nginx-UI/model"
+	"github.com/0xJacky/Nginx-UI/query"
+	"github.com/go-acme/lego/v5/certcrypto"
+	"github.com/uozi-tech/cosy/logger"
 )
 
 type SyncCertificatePayload struct {
@@ -33,20 +32,18 @@ func SyncToRemoteServer(c *model.Cert) (err error) {
 
 	nginxConfPath := nginx.GetConfPath()
 	if !helper.IsUnderDirectory(c.SSLCertificatePath, nginxConfPath) {
-		return fmt.Errorf("ssl_certificate_path: %s is not under the nginx conf path: %s",
-			c.SSLCertificatePath, nginxConfPath)
+		return e.NewWithParams(50006, ErrPathIsNotUnderTheNginxConfDir.Error(), c.SSLCertificatePath, nginxConfPath)
 	}
 
 	if !helper.IsUnderDirectory(c.SSLCertificateKeyPath, nginxConfPath) {
-		return fmt.Errorf("ssl_certificate_key_path: %s is not under the nginx conf path: %s",
-			c.SSLCertificateKeyPath, nginxConfPath)
+		return e.NewWithParams(50006, ErrPathIsNotUnderTheNginxConfDir.Error(), c.SSLCertificateKeyPath, nginxConfPath)
 	}
 
-	certBytes, err := os.ReadFile(c.SSLCertificatePath)
+	certBytes, err := nginx.ReadFile(c.SSLCertificatePath)
 	if err != nil {
 		return
 	}
-	keyBytes, err := os.ReadFile(c.SSLCertificateKeyPath)
+	keyBytes, err := nginx.ReadFile(c.SSLCertificateKeyPath)
 	if err != nil {
 		return
 	}
@@ -57,7 +54,7 @@ func SyncToRemoteServer(c *model.Cert) (err error) {
 		SSLCertificateKeyPath: c.SSLCertificateKeyPath,
 		SSLCertificate:        string(certBytes),
 		SSLCertificateKey:     string(keyBytes),
-		KeyType:               c.KeyType,
+		KeyType:               c.GetKeyType(),
 	}
 
 	payloadBytes, err := json.Marshal(payload)
@@ -65,11 +62,11 @@ func SyncToRemoteServer(c *model.Cert) (err error) {
 		return
 	}
 
-	q := query.Environment
-	envs, _ := q.Where(q.ID.In(c.SyncNodeIds...)).Find()
-	for _, env := range envs {
+	q := query.Node
+	nodes, _ := q.Where(q.ID.In(c.SyncNodeIds...)).Find()
+	for _, node := range nodes {
 		go func() {
-			err := deploy(env, c, payloadBytes)
+			err := deploy(node, c, payloadBytes)
 			if err != nil {
 				logger.Error(err)
 			}
@@ -82,19 +79,16 @@ func SyncToRemoteServer(c *model.Cert) (err error) {
 type SyncNotificationPayload struct {
 	StatusCode int    `json:"status_code"`
 	CertName   string `json:"cert_name"`
-	EnvName    string `json:"env_name"`
-	RespBody   string `json:"resp_body"`
+	NodeName   string `json:"node_name"`
+	Response   string `json:"response"`
 }
 
-func deploy(env *model.Environment, c *model.Cert, payloadBytes []byte) (err error) {
-	t, err := transport.NewTransport()
+func deploy(node *model.Node, c *model.Cert, payloadBytes []byte) (err error) {
+	client, err := nodeauth.NewHTTPClient(node, 0)
 	if err != nil {
 		return
 	}
-	client := http.Client{
-		Transport: t,
-	}
-	url, err := env.GetUrl("/api/cert_sync")
+	url, err := node.GetUrl("/api/cert_sync")
 	if err != nil {
 		return
 	}
@@ -102,7 +96,6 @@ func deploy(env *model.Environment, c *model.Cert, payloadBytes []byte) (err err
 	if err != nil {
 		return
 	}
-	req.Header.Set("X-Node-Secret", env.Token)
 	resp, err := client.Do(req)
 	if err != nil {
 		return
@@ -117,21 +110,18 @@ func deploy(env *model.Environment, c *model.Cert, payloadBytes []byte) (err err
 	notificationPayload := &SyncNotificationPayload{
 		StatusCode: resp.StatusCode,
 		CertName:   c.Name,
-		EnvName:    env.Name,
-		RespBody:   string(respBody),
-	}
-
-	notificationPayloadBytes, err := json.Marshal(notificationPayload)
-	if err != nil {
-		return
+		NodeName:   node.Name,
+		Response:   string(respBody),
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		notification.Error("Sync Certificate Error", string(notificationPayloadBytes))
+		notification.Error("Sync Certificate Error",
+			"Sync Certificate %{cert_name} to %{node_name} failed", notificationPayload)
 		return
 	}
 
-	notification.Success("Sync Certificate Success", string(notificationPayloadBytes))
+	notification.Success("Sync Certificate Success",
+		"Sync Certificate %{cert_name} to %{node_name} successfully", notificationPayload)
 
 	return
 }

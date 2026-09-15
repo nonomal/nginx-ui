@@ -28,12 +28,27 @@ func newSite(db *gorm.DB, opts ...gen.DOOption) site {
 
 	tableName := _site.siteDo.TableName()
 	_site.ALL = field.NewAsterisk(tableName)
-	_site.ID = field.NewInt(tableName, "id")
+	_site.ID = field.NewUint64(tableName, "id")
 	_site.CreatedAt = field.NewTime(tableName, "created_at")
 	_site.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_site.DeletedAt = field.NewField(tableName, "deleted_at")
 	_site.Path = field.NewString(tableName, "path")
+	_site.Description = field.NewString(tableName, "description")
 	_site.Advanced = field.NewBool(tableName, "advanced")
+	_site.NamespaceID = field.NewUint64(tableName, "namespace_id")
+	_site.SyncNodeIDs = field.NewField(tableName, "sync_node_ids")
+	_site.RemoteEnabled = field.NewBool(tableName, "remote_enabled")
+	_site.DNSRecords = field.NewField(tableName, "dns_records")
+	_site.DNSDomainID = field.NewInt(tableName, "dns_domain_id")
+	_site.DNSRecordID = field.NewString(tableName, "dns_record_id")
+	_site.DNSRecordName = field.NewString(tableName, "dns_record_name")
+	_site.DNSRecordType = field.NewString(tableName, "dns_record_type")
+	_site.DNSRecordExists = field.NewBool(tableName, "dns_record_exists")
+	_site.Namespace = siteBelongsToNamespace{
+		db: db.Session(&gorm.Session{}),
+
+		RelationField: field.NewRelation("Namespace", "model.Namespace"),
+	}
 
 	_site.fillFieldMap()
 
@@ -43,13 +58,24 @@ func newSite(db *gorm.DB, opts ...gen.DOOption) site {
 type site struct {
 	siteDo
 
-	ALL       field.Asterisk
-	ID        field.Int
-	CreatedAt field.Time
-	UpdatedAt field.Time
-	DeletedAt field.Field
-	Path      field.String
-	Advanced  field.Bool
+	ALL             field.Asterisk
+	ID              field.Uint64
+	CreatedAt       field.Time
+	UpdatedAt       field.Time
+	DeletedAt       field.Field
+	Path            field.String
+	Description     field.String
+	Advanced        field.Bool
+	NamespaceID     field.Uint64
+	SyncNodeIDs     field.Field
+	RemoteEnabled   field.Bool
+	DNSRecords      field.Field
+	DNSDomainID     field.Int
+	DNSRecordID     field.String
+	DNSRecordName   field.String
+	DNSRecordType   field.String
+	DNSRecordExists field.Bool
+	Namespace       siteBelongsToNamespace
 
 	fieldMap map[string]field.Expr
 }
@@ -66,12 +92,22 @@ func (s site) As(alias string) *site {
 
 func (s *site) updateTableName(table string) *site {
 	s.ALL = field.NewAsterisk(table)
-	s.ID = field.NewInt(table, "id")
+	s.ID = field.NewUint64(table, "id")
 	s.CreatedAt = field.NewTime(table, "created_at")
 	s.UpdatedAt = field.NewTime(table, "updated_at")
 	s.DeletedAt = field.NewField(table, "deleted_at")
 	s.Path = field.NewString(table, "path")
+	s.Description = field.NewString(table, "description")
 	s.Advanced = field.NewBool(table, "advanced")
+	s.NamespaceID = field.NewUint64(table, "namespace_id")
+	s.SyncNodeIDs = field.NewField(table, "sync_node_ids")
+	s.RemoteEnabled = field.NewBool(table, "remote_enabled")
+	s.DNSRecords = field.NewField(table, "dns_records")
+	s.DNSDomainID = field.NewInt(table, "dns_domain_id")
+	s.DNSRecordID = field.NewString(table, "dns_record_id")
+	s.DNSRecordName = field.NewString(table, "dns_record_name")
+	s.DNSRecordType = field.NewString(table, "dns_record_type")
+	s.DNSRecordExists = field.NewBool(table, "dns_record_exists")
 
 	s.fillFieldMap()
 
@@ -88,29 +124,124 @@ func (s *site) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (s *site) fillFieldMap() {
-	s.fieldMap = make(map[string]field.Expr, 6)
+	s.fieldMap = make(map[string]field.Expr, 17)
 	s.fieldMap["id"] = s.ID
 	s.fieldMap["created_at"] = s.CreatedAt
 	s.fieldMap["updated_at"] = s.UpdatedAt
 	s.fieldMap["deleted_at"] = s.DeletedAt
 	s.fieldMap["path"] = s.Path
+	s.fieldMap["description"] = s.Description
 	s.fieldMap["advanced"] = s.Advanced
+	s.fieldMap["namespace_id"] = s.NamespaceID
+	s.fieldMap["sync_node_ids"] = s.SyncNodeIDs
+	s.fieldMap["remote_enabled"] = s.RemoteEnabled
+	s.fieldMap["dns_records"] = s.DNSRecords
+	s.fieldMap["dns_domain_id"] = s.DNSDomainID
+	s.fieldMap["dns_record_id"] = s.DNSRecordID
+	s.fieldMap["dns_record_name"] = s.DNSRecordName
+	s.fieldMap["dns_record_type"] = s.DNSRecordType
+	s.fieldMap["dns_record_exists"] = s.DNSRecordExists
+
 }
 
 func (s site) clone(db *gorm.DB) site {
 	s.siteDo.ReplaceConnPool(db.Statement.ConnPool)
+	s.Namespace.db = db.Session(&gorm.Session{Initialized: true})
+	s.Namespace.db.Statement.ConnPool = db.Statement.ConnPool
 	return s
 }
 
 func (s site) replaceDB(db *gorm.DB) site {
 	s.siteDo.ReplaceDB(db)
+	s.Namespace.db = db.Session(&gorm.Session{})
 	return s
+}
+
+type siteBelongsToNamespace struct {
+	db *gorm.DB
+
+	field.RelationField
+}
+
+func (a siteBelongsToNamespace) Where(conds ...field.Expr) *siteBelongsToNamespace {
+	if len(conds) == 0 {
+		return &a
+	}
+
+	exprs := make([]clause.Expression, 0, len(conds))
+	for _, cond := range conds {
+		exprs = append(exprs, cond.BeCond().(clause.Expression))
+	}
+	a.db = a.db.Clauses(clause.Where{Exprs: exprs})
+	return &a
+}
+
+func (a siteBelongsToNamespace) WithContext(ctx context.Context) *siteBelongsToNamespace {
+	a.db = a.db.WithContext(ctx)
+	return &a
+}
+
+func (a siteBelongsToNamespace) Session(session *gorm.Session) *siteBelongsToNamespace {
+	a.db = a.db.Session(session)
+	return &a
+}
+
+func (a siteBelongsToNamespace) Model(m *model.Site) *siteBelongsToNamespaceTx {
+	return &siteBelongsToNamespaceTx{a.db.Model(m).Association(a.Name())}
+}
+
+func (a siteBelongsToNamespace) Unscoped() *siteBelongsToNamespace {
+	a.db = a.db.Unscoped()
+	return &a
+}
+
+type siteBelongsToNamespaceTx struct{ tx *gorm.Association }
+
+func (a siteBelongsToNamespaceTx) Find() (result *model.Namespace, err error) {
+	return result, a.tx.Find(&result)
+}
+
+func (a siteBelongsToNamespaceTx) Append(values ...*model.Namespace) (err error) {
+	targetValues := make([]interface{}, len(values))
+	for i, v := range values {
+		targetValues[i] = v
+	}
+	return a.tx.Append(targetValues...)
+}
+
+func (a siteBelongsToNamespaceTx) Replace(values ...*model.Namespace) (err error) {
+	targetValues := make([]interface{}, len(values))
+	for i, v := range values {
+		targetValues[i] = v
+	}
+	return a.tx.Replace(targetValues...)
+}
+
+func (a siteBelongsToNamespaceTx) Delete(values ...*model.Namespace) (err error) {
+	targetValues := make([]interface{}, len(values))
+	for i, v := range values {
+		targetValues[i] = v
+	}
+	return a.tx.Delete(targetValues...)
+}
+
+func (a siteBelongsToNamespaceTx) Clear() error {
+	return a.tx.Clear()
+}
+
+func (a siteBelongsToNamespaceTx) Count() int64 {
+	return a.tx.Count()
+}
+
+func (a siteBelongsToNamespaceTx) Unscoped() *siteBelongsToNamespaceTx {
+	a.tx = a.tx.Unscoped()
+	return &a
 }
 
 type siteDo struct{ gen.DO }
 
 // FirstByID Where("id=@id")
-func (s siteDo) FirstByID(id int) (result *model.Site, err error) {
+func (s siteDo) FirstByID(id uint64) (result *model.Site, err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder
@@ -125,7 +256,7 @@ func (s siteDo) FirstByID(id int) (result *model.Site, err error) {
 }
 
 // DeleteByID update @@table set deleted_at=strftime('%Y-%m-%d %H:%M:%S','now') where id=@id
-func (s siteDo) DeleteByID(id int) (err error) {
+func (s siteDo) DeleteByID(id uint64) (err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder

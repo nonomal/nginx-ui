@@ -26,14 +26,20 @@ http {
 ```
 
 For more
-information: [debian/conf/nginx.conf](https://salsa.debian.org/nginx-team/nginx/-/blob/master/debian/conf/nginx.conf#L59-L60)
+information: [debian/conf/nginx.conf](https://salsa.debian.org/nginx-team/nginx/-/blob/debian/latest/debian/conf/nginx.conf#L60-L61)
 
 ## Installation
 
-We recommend using the [installation script](./install-script-linux) for Linux users, in which case you can directly
-control the host machine's Nginx. You can also [install via Docker](#install-with-docker), where our provided image
-includes Nginx and can be used bundled. For advanced users, you may also visit the [latest release](https://github.com/0xJacky/nginx-ui/releases/latest)
-to download the latest distribution and [run executable directly](#run-executable-directly), or [manually build it](./build).
+We provide several installation methods to suit different needs:
+
+- **macOS/Linux**: Use [Homebrew](./install-homebrew) for the easiest installation
+- **Windows**: Use [Winget](./install-winget) for Windows package management
+- **Linux**: Use the [installation script](./install-script-linux) to directly control the host machine's Nginx
+- **Docker**: [Install via Docker](#install-with-docker) with our bundled image that includes Nginx
+- **Kubernetes**: Use the [official Helm chart](./install-kubernetes) with persistent volumes
+- **OpenWrt 25.12+**: Use the [self-hosted signed APK repository](./install-openwrt)
+- **Unraid**: Use the [official standalone or SWAG Community Applications template](./install-unraid)
+- **Advanced**: Download from [latest release](https://github.com/0xJacky/nginx-ui/releases/latest) and [run executable directly](#run-executable-directly), or [manually build it](./build)
 
 In the first runtime of Nginx UI, please visit `http://<your_server_ip>:<listen_port>`
 in your browser to complete the follow-up configurations.
@@ -41,6 +47,81 @@ in your browser to complete the follow-up configurations.
 In addition, we provide [an example](./nginx-proxy-example) of using Nginx to reverse proxy Nginx UI,
 which can be used after installation is complete.
 
+### Getting the Install Secret
+
+Before the web setup can continue, Nginx UI requires a one-time install secret on first startup.
+The secret is stored in a hidden file named `.install_secret` in the same directory as `app.ini`.
+
+You can obtain it in different ways depending on how you installed Nginx UI:
+
+- **Linux installation script**: The script prints the secret after the service starts. If you miss it, read `$DATA_PATH/.install_secret` (default: `/usr/local/etc/nginx-ui/.install_secret`).
+- **Homebrew**: Read `.install_secret` from the same directory as `app.ini`, such as `/opt/homebrew/etc/nginx-ui/.install_secret`, `/usr/local/etc/nginx-ui/.install_secret`, or `/home/linuxbrew/.linuxbrew/etc/nginx-ui/.install_secret`.
+- **Docker / Docker Compose**: Read `.install_secret` from the host directory mounted to `/etc/nginx-ui`. If you did not mount that directory, run `docker exec <container_name> cat /etc/nginx-ui/.install_secret`.
+- **Winget**: Read `.install_secret` from the same directory as `app.ini`, typically `%LOCALAPPDATA%\nginx-ui\.install_secret` or `C:\ProgramData\nginx-ui\.install_secret`.
+- **Run executable directly / manual build**: Read `.install_secret` from the same directory as the config file you pass to `-config`.
+
+The secret is only valid during the first-run setup window and will be removed after setup completes or expires.
+
+## Install with Homebrew
+
+For macOS and Linux users, you can install Nginx UI using Homebrew, which provides the easiest installation experience.
+
+::: tip
+
+This installation method is available for macOS and Linux. For other operating systems, please use alternative installation methods.
+
+:::
+
+### Install
+
+```bash
+brew install 0xjacky/tools/nginx-ui
+```
+
+### Start Service
+
+```bash
+# Start the service
+brew services start nginx-ui
+
+# Or run in foreground
+nginx-ui
+```
+
+### Stop Service
+
+```bash
+brew services stop nginx-ui
+```
+
+### Upgrade
+
+```bash
+brew upgrade nginx-ui
+```
+
+### Uninstall
+
+```bash
+# Stop the service first
+brew services stop nginx-ui
+
+# Uninstall the package
+brew uninstall nginx-ui
+
+# Optionally remove the tap
+brew untap 0xjacky/tools
+```
+
+::: warning
+
+After uninstalling, configuration files and data will be preserved in:
+- **macOS**: `~/Library/Application Support/nginx-ui/`
+- **Linux**: `~/.local/share/nginx-ui/` or `~/.config/nginx-ui/`
+
+If you want to completely remove all data, please delete these directories manually.
+
+:::
 
 ## Install with Docker
 
@@ -50,7 +131,9 @@ you can easily make the switch.
 
 ::: tip
 
-Nginx UI is by default proxied to port `8080` of the container.
+The official Docker image listens on container ports `80` and `443`.
+Requests to container port `80` are reverse proxied to the Nginx UI backend at `127.0.0.1:9000`.
+Access Nginx UI through the host port that you publish to container port `80`.
 When using this container for the first time, ensure that the volume mapped to `/etc/nginx` is empty.
 If you want to host static files, you can map directories to container.
 
@@ -74,6 +157,7 @@ docker run -dit \
   -v /mnt/user/appdata/nginx:/etc/nginx \
   -v /mnt/user/appdata/nginx-ui:/etc/nginx-ui \
   -v /var/www:/var/www \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   -p 8080:80 -p 8443:443 \
   uozi/nginx-ui:latest
 ```
@@ -89,7 +173,7 @@ We recommend configuring it as a daemon or using the [installation script](./ins
 ### Config
 
 ```shell
-echo '[server]\nHttpPort = 9000' > app.ini
+echo '[server]\nPort = 9000' > app.ini
 ```
 
 ::: tip

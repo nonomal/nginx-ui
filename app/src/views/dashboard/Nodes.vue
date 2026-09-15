@@ -1,0 +1,321 @@
+<script setup lang="ts">
+import type { Ref } from 'vue'
+import type { Namespace } from '@/api/namespace'
+import type { AnalyticNode, Node } from '@/api/node'
+import Icon, { LinkOutlined, ThunderboltOutlined } from '@antdv-next/icons'
+import namespaceApi from '@/api/namespace'
+import logo from '@/assets/img/logo.png'
+import pulse from '@/assets/svg/pulse.svg?component'
+import { List, ListItem, ListItemMeta } from '@/components/List'
+import NamespaceTabs from '@/components/NamespaceTabs'
+import { formatDateTime } from '@/lib/helper'
+import { useSettingsStore } from '@/pinia'
+import { useNodeAvailabilityStore } from '@/pinia/moudule/nodeAvailability'
+import { version } from '@/version.json'
+import NodeAnalyticItem from './components/NodeAnalyticItem.vue'
+
+const nodeStore = useNodeAvailabilityStore()
+const { nodeList } = storeToRefs(nodeStore)
+const activeNamespaceKey = ref<string | number>(0)
+
+// Get namespaces to filter nodes
+const namespaces = ref([]) as Ref<Namespace[]>
+
+// Filtered nodes based on active namespace
+const filteredNodes = computed(() => {
+  if (activeNamespaceKey.value === 0) {
+    return nodeList.value
+  }
+
+  const currentNamespace = namespaces.value.find(ns => ns.id === Number(activeNamespaceKey.value))
+  if (!currentNamespace || !currentNamespace.sync_node_ids) {
+    return []
+  }
+
+  return nodeList.value
+    .filter(node => currentNamespace.sync_node_ids.includes(node.id ?? 0))
+})
+
+// Load all namespaces (handle pagination)
+async function loadAllNamespaces() {
+  const allNamespaces: Namespace[] = []
+  let currentPage = 1
+  let hasMore = true
+
+  while (hasMore) {
+    try {
+      const response = await namespaceApi.getList({ page: currentPage })
+      allNamespaces.push(...response.data)
+
+      if (response.pagination && response.pagination.current_page < response.pagination.total_pages) {
+        currentPage++
+      }
+      else {
+        hasMore = false
+      }
+    }
+    catch (error) {
+      console.error('Failed to load namespaces:', error)
+      hasMore = false
+    }
+  }
+
+  namespaces.value = allNamespaces
+}
+
+onMounted(() => {
+  loadAllNamespaces()
+})
+
+const settingsStore = useSettingsStore()
+const { node } = storeToRefs(settingsStore)
+
+function linkStart(n: Node) {
+  node.value.id = n.id
+  node.value.name = n.name
+}
+
+const visible = computed(() => {
+  if (node.value.id > 0)
+    return false
+  else
+    return nodeList.value.length
+})
+</script>
+
+<template>
+  <ACard
+    v-if="visible"
+    class="env-list-card w-full max-w-none"
+    :title="$gettext('Nodes')"
+    variant="borderless"
+  >
+    <NamespaceTabs v-model:active-key="activeNamespaceKey" class="mb-4" hide-node-info />
+
+    <List
+      item-layout="horizontal"
+      :data-source="filteredNodes"
+      class="env-list"
+    >
+      <template #renderItem="{ item }">
+        <ListItem class="env-list-item">
+          <ListItemMeta>
+            <template #title>
+              <div class="env-title-wrapper">
+                <div class="env-tags">
+                  <ATag
+                    v-if="item.status"
+                    color="blue"
+                    variant="filled"
+                  >
+                    {{ $gettext('Online') }}
+                  </ATag>
+                  <ATag
+                    v-else
+                    color="error"
+                    variant="filled"
+                  >
+                    {{ $gettext('Offline') }}
+                  </ATag>
+                </div>
+                <span class="env-name">{{ item.name }}</span>
+              </div>
+
+              <div class="env-meta-wrapper">
+                <template v-if="item.status">
+                  <div class="runtime-meta">
+                    <Icon :component="pulse" />
+                    <span v-if="item.response_at">{{ formatDateTime(item.response_at) }}</span>
+                  </div>
+                  <div class="runtime-meta">
+                    <ThunderboltOutlined />
+                    <span>{{ item.version }}</span>
+                  </div>
+                </template>
+                <div class="runtime-meta">
+                  <LinkOutlined />
+                  <span class="truncate">{{ item.url }}</span>
+                </div>
+              </div>
+            </template>
+            <template #avatar>
+              <AAvatar :src="logo" class="flex-shrink-0" />
+            </template>
+            <template #description>
+              <div class="env-description">
+                <NodeAnalyticItem
+                  :item="item as AnalyticNode"
+                  :current-node-id="node.id"
+                  :local-version="version"
+                  :on-link-start="linkStart"
+                  class="node-analytic"
+                />
+              </div>
+            </template>
+          </ListItemMeta>
+        </ListItem>
+      </template>
+    </List>
+  </ACard>
+</template>
+
+<style scoped lang="less">
+.env-list-card {
+  margin-top: 16px;
+
+  // Ensure card doesn't overflow on small screens
+  @media (max-width: 768px) {
+    margin-left: -8px;
+    margin-right: -8px;
+    border-radius: 0;
+  }
+}
+
+.env-list {
+  // Responsive handling for list container
+  .env-list-item {
+    padding: 16px 0;
+
+    @media (max-width: 576px) {
+      padding: 12px 0;
+    }
+  }
+}
+
+// Title area styles
+.env-title-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-right: 8px;
+
+  .env-name {
+    font-weight: 500;
+    line-height: 1.4;
+  }
+}
+
+// Metadata area styles
+.env-meta-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+
+  @media (max-width: 768px) {
+    margin-top: 8px;
+    margin-bottom: 8px;
+  }
+
+  @media (max-width: 576px) {
+    gap: 8px;
+  }
+}
+
+.runtime-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 400;
+  color: #9b9b9b;
+  font-size: 14px;
+  line-height: 1.4;
+  max-width: 100%;
+
+  .anticon {
+    flex-shrink: 0;
+  }
+
+  span {
+    min-width: 0; // Allow text truncation
+  }
+
+  @media (max-width: 576px) {
+    font-size: 12px;
+  }
+}
+
+// Description area styles
+.env-description {
+  margin-top: 8px;
+
+  .node-analytic {
+    width: 100%;
+  }
+}
+
+// Global dark mode class adaptation
+.dark {
+  .nui-list-item-meta-avatar .ant-avatar {
+    border: 1px solid #303030 !important;
+  }
+}
+
+// Deep selector optimizations
+:deep(.nui-list-item-meta) {
+  width: 100%;
+  display: flex;
+
+  .nui-list-item-meta-content {
+    width: 100%;
+    min-width: 0; // Allow content to shrink
+  }
+
+  .nui-list-item-meta-title {
+    margin-bottom: 0;
+    display: flex;
+    align-items: center;
+
+    @media (max-width: 768px) {
+      display: block;
+    }
+  }
+
+  .nui-list-item-meta-avatar {
+    display: flex;
+    align-items: center;
+    align-self: center; // Vertically center relative to the entire meta container
+
+    .ant-avatar {
+      border: 1px solid #f0f0f0;
+      border-radius: 8px; // Square with rounded corners
+      padding: 2px; // Add padding
+      transition: border-color 0.2s ease;
+    }
+    @media (max-width: 768px) {
+      display: none;
+    }
+  }
+}
+
+// Responsive breakpoint optimizations
+@media (max-width: 1200px) {
+  .env-meta-wrapper {
+    gap: 10px;
+  }
+}
+
+@media (max-width: 992px) {
+  .env-title-wrapper .env-name {
+    font-size: 15px;
+  }
+
+  .runtime-meta {
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 480px) {
+  .env-title-wrapper {
+    margin-bottom: 6px;
+  }
+
+  .env-meta-wrapper {
+    gap: 6px;
+  }
+
+  .runtime-meta {
+    font-size: 11px;
+  }
+}
+</style>

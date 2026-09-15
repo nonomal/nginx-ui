@@ -1,26 +1,24 @@
 package cert
 
 import (
+	"context"
+
+	"github.com/0xJacky/Nginx-UI/internal/translation"
 	"github.com/0xJacky/Nginx-UI/model"
-	"github.com/go-acme/lego/v4/certificate"
-	"github.com/go-acme/lego/v4/lego"
-	"github.com/pkg/errors"
-	"log"
+	"github.com/go-acme/lego/v5/certificate"
+	"github.com/go-acme/lego/v5/lego"
+	"github.com/uozi-tech/cosy"
 )
 
-func obtain(payload *ConfigPayload, client *lego.Client, l *log.Logger, errChan chan error) {
-	request := certificate.ObtainRequest{
-		Domains:    payload.ServerName,
-		Bundle:     true,
-		MustStaple: payload.MustStaple,
+func obtain(payload *ConfigPayload, client *lego.Client, l *Logger) error {
+	request := newObtainRequest(payload)
+
+	l.Info(translation.C("[Nginx UI] Obtaining certificate"))
+	certificates, err := client.Certificate.Obtain(context.Background(), request)
+	if err != nil {
+		return cosy.WrapErrorWithParams(ErrObtainCert, err.Error())
 	}
 
-	l.Println("[INFO] [Nginx UI] Obtaining certificate")
-	certificates, err := client.Certificate.Obtain(request)
-	if err != nil {
-		errChan <- errors.Wrap(err, "obtain certificate error")
-		return
-	}
 	payload.Resource = &model.CertificateResource{
 		Resource:          certificates,
 		PrivateKey:        certificates.PrivateKey,
@@ -29,5 +27,22 @@ func obtain(payload *ConfigPayload, client *lego.Client, l *log.Logger, errChan 
 		CSR:               certificates.CSR,
 	}
 
-	payload.WriteFile(l, errChan)
+	err = payload.WriteFile(l)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func newObtainRequest(payload *ConfigPayload) certificate.ObtainRequest {
+	return certificate.ObtainRequest{
+		Domains:          payload.ServerName,
+		Bundle:           true,
+		KeyType:          payload.GetKeyType(),
+		MustStaple:       payload.MustStaple,
+		EnableCommonName: payload.EnableCommonName,
+		Profile:          payload.Profile,
+		ReplacesCertID:   payload.ReplacesCertID,
+	}
 }

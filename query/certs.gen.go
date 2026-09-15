@@ -28,7 +28,7 @@ func newCert(db *gorm.DB, opts ...gen.DOOption) cert {
 
 	tableName := _cert.certDo.TableName()
 	_cert.ALL = field.NewAsterisk(tableName)
-	_cert.ID = field.NewInt(tableName, "id")
+	_cert.ID = field.NewUint64(tableName, "id")
 	_cert.CreatedAt = field.NewTime(tableName, "created_at")
 	_cert.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_cert.DeletedAt = field.NewField(tableName, "deleted_at")
@@ -37,16 +37,35 @@ func newCert(db *gorm.DB, opts ...gen.DOOption) cert {
 	_cert.Filename = field.NewString(tableName, "filename")
 	_cert.SSLCertificatePath = field.NewString(tableName, "ssl_certificate_path")
 	_cert.SSLCertificateKeyPath = field.NewString(tableName, "ssl_certificate_key_path")
+	_cert.Fingerprint = field.NewString(tableName, "fingerprint")
 	_cert.AutoCert = field.NewInt(tableName, "auto_cert")
 	_cert.ChallengeMethod = field.NewString(tableName, "challenge_method")
-	_cert.DnsCredentialID = field.NewInt(tableName, "dns_credential_id")
-	_cert.ACMEUserID = field.NewInt(tableName, "acme_user_id")
+	_cert.Profile = field.NewString(tableName, "profile")
+	_cert.DnsCredentialID = field.NewUint64(tableName, "dns_credential_id")
+	_cert.ACMEUserID = field.NewUint64(tableName, "acme_user_id")
 	_cert.KeyType = field.NewString(tableName, "key_type")
 	_cert.Log = field.NewString(tableName, "log")
 	_cert.Resource = field.NewField(tableName, "resource")
 	_cert.SyncNodeIds = field.NewField(tableName, "sync_node_ids")
 	_cert.MustStaple = field.NewBool(tableName, "must_staple")
 	_cert.LegoDisableCNAMESupport = field.NewBool(tableName, "lego_disable_cname_support")
+	_cert.DisableAuthoritativeNSPropagation = field.NewBool(tableName, "disable_authoritative_ns_propagation")
+	_cert.EnableCommonName = field.NewBool(tableName, "enable_common_name")
+	_cert.RevokeOld = field.NewBool(tableName, "revoke_old")
+	_cert.SelfSignedConfig = field.NewField(tableName, "self_signed_config")
+	_cert.LastAutoRenewAt = field.NewTime(tableName, "last_auto_renew_at")
+	_cert.LastAutoRenewError = field.NewString(tableName, "last_auto_renew_error")
+	_cert.NextAutoRenewAt = field.NewTime(tableName, "next_auto_renew_at")
+	_cert.LastRenewalInfoCheckAt = field.NewTime(tableName, "last_renewal_info_check_at")
+	_cert.AutoRenewScheduleFingerprint = field.NewString(tableName, "auto_renew_schedule_fingerprint")
+	_cert.LastExpiryNotifyAt = field.NewTime(tableName, "last_expiry_notify_at")
+	_cert.LastExpiryNotifyNotAfter = field.NewTime(tableName, "last_expiry_notify_not_after")
+	_cert.LastExpiryNotifyStage = field.NewString(tableName, "last_expiry_notify_stage")
+	_cert.LastDeploymentIssueHash = field.NewString(tableName, "last_deployment_issue_hash")
+	_cert.LastDeploymentIssueNotifyAt = field.NewTime(tableName, "last_deployment_issue_notify_at")
+	_cert.Status = field.NewString(tableName, "status")
+	_cert.LastError = field.NewString(tableName, "last_error")
+	_cert.LastAttemptAt = field.NewTime(tableName, "last_attempt_at")
 	_cert.DnsCredential = certBelongsToDnsCredential{
 		db: db.Session(&gorm.Session{}),
 
@@ -67,27 +86,46 @@ func newCert(db *gorm.DB, opts ...gen.DOOption) cert {
 type cert struct {
 	certDo
 
-	ALL                     field.Asterisk
-	ID                      field.Int
-	CreatedAt               field.Time
-	UpdatedAt               field.Time
-	DeletedAt               field.Field
-	Name                    field.String
-	Domains                 field.Field
-	Filename                field.String
-	SSLCertificatePath      field.String
-	SSLCertificateKeyPath   field.String
-	AutoCert                field.Int
-	ChallengeMethod         field.String
-	DnsCredentialID         field.Int
-	ACMEUserID              field.Int
-	KeyType                 field.String
-	Log                     field.String
-	Resource                field.Field
-	SyncNodeIds             field.Field
-	MustStaple              field.Bool
-	LegoDisableCNAMESupport field.Bool
-	DnsCredential           certBelongsToDnsCredential
+	ALL                               field.Asterisk
+	ID                                field.Uint64
+	CreatedAt                         field.Time
+	UpdatedAt                         field.Time
+	DeletedAt                         field.Field
+	Name                              field.String
+	Domains                           field.Field
+	Filename                          field.String
+	SSLCertificatePath                field.String
+	SSLCertificateKeyPath             field.String
+	Fingerprint                       field.String
+	AutoCert                          field.Int
+	ChallengeMethod                   field.String
+	Profile                           field.String
+	DnsCredentialID                   field.Uint64
+	ACMEUserID                        field.Uint64
+	KeyType                           field.String
+	Log                               field.String
+	Resource                          field.Field
+	SyncNodeIds                       field.Field
+	MustStaple                        field.Bool
+	LegoDisableCNAMESupport           field.Bool
+	DisableAuthoritativeNSPropagation field.Bool
+	EnableCommonName                  field.Bool
+	RevokeOld                         field.Bool
+	SelfSignedConfig                  field.Field
+	LastAutoRenewAt                   field.Time
+	LastAutoRenewError                field.String
+	NextAutoRenewAt                   field.Time
+	LastRenewalInfoCheckAt            field.Time
+	AutoRenewScheduleFingerprint      field.String
+	LastExpiryNotifyAt                field.Time
+	LastExpiryNotifyNotAfter          field.Time
+	LastExpiryNotifyStage             field.String
+	LastDeploymentIssueHash           field.String
+	LastDeploymentIssueNotifyAt       field.Time
+	Status                            field.String
+	LastError                         field.String
+	LastAttemptAt                     field.Time
+	DnsCredential                     certBelongsToDnsCredential
 
 	ACMEUser certBelongsToACMEUser
 
@@ -106,7 +144,7 @@ func (c cert) As(alias string) *cert {
 
 func (c *cert) updateTableName(table string) *cert {
 	c.ALL = field.NewAsterisk(table)
-	c.ID = field.NewInt(table, "id")
+	c.ID = field.NewUint64(table, "id")
 	c.CreatedAt = field.NewTime(table, "created_at")
 	c.UpdatedAt = field.NewTime(table, "updated_at")
 	c.DeletedAt = field.NewField(table, "deleted_at")
@@ -115,16 +153,35 @@ func (c *cert) updateTableName(table string) *cert {
 	c.Filename = field.NewString(table, "filename")
 	c.SSLCertificatePath = field.NewString(table, "ssl_certificate_path")
 	c.SSLCertificateKeyPath = field.NewString(table, "ssl_certificate_key_path")
+	c.Fingerprint = field.NewString(table, "fingerprint")
 	c.AutoCert = field.NewInt(table, "auto_cert")
 	c.ChallengeMethod = field.NewString(table, "challenge_method")
-	c.DnsCredentialID = field.NewInt(table, "dns_credential_id")
-	c.ACMEUserID = field.NewInt(table, "acme_user_id")
+	c.Profile = field.NewString(table, "profile")
+	c.DnsCredentialID = field.NewUint64(table, "dns_credential_id")
+	c.ACMEUserID = field.NewUint64(table, "acme_user_id")
 	c.KeyType = field.NewString(table, "key_type")
 	c.Log = field.NewString(table, "log")
 	c.Resource = field.NewField(table, "resource")
 	c.SyncNodeIds = field.NewField(table, "sync_node_ids")
 	c.MustStaple = field.NewBool(table, "must_staple")
 	c.LegoDisableCNAMESupport = field.NewBool(table, "lego_disable_cname_support")
+	c.DisableAuthoritativeNSPropagation = field.NewBool(table, "disable_authoritative_ns_propagation")
+	c.EnableCommonName = field.NewBool(table, "enable_common_name")
+	c.RevokeOld = field.NewBool(table, "revoke_old")
+	c.SelfSignedConfig = field.NewField(table, "self_signed_config")
+	c.LastAutoRenewAt = field.NewTime(table, "last_auto_renew_at")
+	c.LastAutoRenewError = field.NewString(table, "last_auto_renew_error")
+	c.NextAutoRenewAt = field.NewTime(table, "next_auto_renew_at")
+	c.LastRenewalInfoCheckAt = field.NewTime(table, "last_renewal_info_check_at")
+	c.AutoRenewScheduleFingerprint = field.NewString(table, "auto_renew_schedule_fingerprint")
+	c.LastExpiryNotifyAt = field.NewTime(table, "last_expiry_notify_at")
+	c.LastExpiryNotifyNotAfter = field.NewTime(table, "last_expiry_notify_not_after")
+	c.LastExpiryNotifyStage = field.NewString(table, "last_expiry_notify_stage")
+	c.LastDeploymentIssueHash = field.NewString(table, "last_deployment_issue_hash")
+	c.LastDeploymentIssueNotifyAt = field.NewTime(table, "last_deployment_issue_notify_at")
+	c.Status = field.NewString(table, "status")
+	c.LastError = field.NewString(table, "last_error")
+	c.LastAttemptAt = field.NewTime(table, "last_attempt_at")
 
 	c.fillFieldMap()
 
@@ -141,7 +198,7 @@ func (c *cert) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (c *cert) fillFieldMap() {
-	c.fieldMap = make(map[string]field.Expr, 21)
+	c.fieldMap = make(map[string]field.Expr, 40)
 	c.fieldMap["id"] = c.ID
 	c.fieldMap["created_at"] = c.CreatedAt
 	c.fieldMap["updated_at"] = c.UpdatedAt
@@ -151,8 +208,10 @@ func (c *cert) fillFieldMap() {
 	c.fieldMap["filename"] = c.Filename
 	c.fieldMap["ssl_certificate_path"] = c.SSLCertificatePath
 	c.fieldMap["ssl_certificate_key_path"] = c.SSLCertificateKeyPath
+	c.fieldMap["fingerprint"] = c.Fingerprint
 	c.fieldMap["auto_cert"] = c.AutoCert
 	c.fieldMap["challenge_method"] = c.ChallengeMethod
+	c.fieldMap["profile"] = c.Profile
 	c.fieldMap["dns_credential_id"] = c.DnsCredentialID
 	c.fieldMap["acme_user_id"] = c.ACMEUserID
 	c.fieldMap["key_type"] = c.KeyType
@@ -161,16 +220,39 @@ func (c *cert) fillFieldMap() {
 	c.fieldMap["sync_node_ids"] = c.SyncNodeIds
 	c.fieldMap["must_staple"] = c.MustStaple
 	c.fieldMap["lego_disable_cname_support"] = c.LegoDisableCNAMESupport
+	c.fieldMap["disable_authoritative_ns_propagation"] = c.DisableAuthoritativeNSPropagation
+	c.fieldMap["enable_common_name"] = c.EnableCommonName
+	c.fieldMap["revoke_old"] = c.RevokeOld
+	c.fieldMap["self_signed_config"] = c.SelfSignedConfig
+	c.fieldMap["last_auto_renew_at"] = c.LastAutoRenewAt
+	c.fieldMap["last_auto_renew_error"] = c.LastAutoRenewError
+	c.fieldMap["next_auto_renew_at"] = c.NextAutoRenewAt
+	c.fieldMap["last_renewal_info_check_at"] = c.LastRenewalInfoCheckAt
+	c.fieldMap["auto_renew_schedule_fingerprint"] = c.AutoRenewScheduleFingerprint
+	c.fieldMap["last_expiry_notify_at"] = c.LastExpiryNotifyAt
+	c.fieldMap["last_expiry_notify_not_after"] = c.LastExpiryNotifyNotAfter
+	c.fieldMap["last_expiry_notify_stage"] = c.LastExpiryNotifyStage
+	c.fieldMap["last_deployment_issue_hash"] = c.LastDeploymentIssueHash
+	c.fieldMap["last_deployment_issue_notify_at"] = c.LastDeploymentIssueNotifyAt
+	c.fieldMap["status"] = c.Status
+	c.fieldMap["last_error"] = c.LastError
+	c.fieldMap["last_attempt_at"] = c.LastAttemptAt
 
 }
 
 func (c cert) clone(db *gorm.DB) cert {
 	c.certDo.ReplaceConnPool(db.Statement.ConnPool)
+	c.DnsCredential.db = db.Session(&gorm.Session{Initialized: true})
+	c.DnsCredential.db.Statement.ConnPool = db.Statement.ConnPool
+	c.ACMEUser.db = db.Session(&gorm.Session{Initialized: true})
+	c.ACMEUser.db.Statement.ConnPool = db.Statement.ConnPool
 	return c
 }
 
 func (c cert) replaceDB(db *gorm.DB) cert {
 	c.certDo.ReplaceDB(db)
+	c.DnsCredential.db = db.Session(&gorm.Session{})
+	c.ACMEUser.db = db.Session(&gorm.Session{})
 	return c
 }
 
@@ -205,6 +287,11 @@ func (a certBelongsToDnsCredential) Session(session *gorm.Session) *certBelongsT
 
 func (a certBelongsToDnsCredential) Model(m *model.Cert) *certBelongsToDnsCredentialTx {
 	return &certBelongsToDnsCredentialTx{a.db.Model(m).Association(a.Name())}
+}
+
+func (a certBelongsToDnsCredential) Unscoped() *certBelongsToDnsCredential {
+	a.db = a.db.Unscoped()
+	return &a
 }
 
 type certBelongsToDnsCredentialTx struct{ tx *gorm.Association }
@@ -245,6 +332,11 @@ func (a certBelongsToDnsCredentialTx) Count() int64 {
 	return a.tx.Count()
 }
 
+func (a certBelongsToDnsCredentialTx) Unscoped() *certBelongsToDnsCredentialTx {
+	a.tx = a.tx.Unscoped()
+	return &a
+}
+
 type certBelongsToACMEUser struct {
 	db *gorm.DB
 
@@ -276,6 +368,11 @@ func (a certBelongsToACMEUser) Session(session *gorm.Session) *certBelongsToACME
 
 func (a certBelongsToACMEUser) Model(m *model.Cert) *certBelongsToACMEUserTx {
 	return &certBelongsToACMEUserTx{a.db.Model(m).Association(a.Name())}
+}
+
+func (a certBelongsToACMEUser) Unscoped() *certBelongsToACMEUser {
+	a.db = a.db.Unscoped()
+	return &a
 }
 
 type certBelongsToACMEUserTx struct{ tx *gorm.Association }
@@ -316,10 +413,15 @@ func (a certBelongsToACMEUserTx) Count() int64 {
 	return a.tx.Count()
 }
 
+func (a certBelongsToACMEUserTx) Unscoped() *certBelongsToACMEUserTx {
+	a.tx = a.tx.Unscoped()
+	return &a
+}
+
 type certDo struct{ gen.DO }
 
 // FirstByID Where("id=@id")
-func (c certDo) FirstByID(id int) (result *model.Cert, err error) {
+func (c certDo) FirstByID(id uint64) (result *model.Cert, err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder
@@ -334,7 +436,7 @@ func (c certDo) FirstByID(id int) (result *model.Cert, err error) {
 }
 
 // DeleteByID update @@table set deleted_at=strftime('%Y-%m-%d %H:%M:%S','now') where id=@id
-func (c certDo) DeleteByID(id int) (err error) {
+func (c certDo) DeleteByID(id uint64) (err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder

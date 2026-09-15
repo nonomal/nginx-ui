@@ -2,7 +2,10 @@ package user
 
 import (
 	"encoding/base64"
-	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/0xJacky/Nginx-UI/api"
 	"github.com/0xJacky/Nginx-UI/internal/cache"
 	"github.com/0xJacky/Nginx-UI/internal/passkey"
@@ -12,15 +15,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
-	"net/http"
-	"strings"
-	"time"
+	"github.com/uozi-tech/cosy"
 )
 
 type Status2FA struct {
-	Enabled       bool `json:"enabled"`
-	OTPStatus     bool `json:"otp_status"`
-	PasskeyStatus bool `json:"passkey_status"`
+	Enabled                        bool `json:"enabled"`
+	OTPStatus                      bool `json:"otp_status"`
+	PasskeyStatus                  bool `json:"passkey_status"`
+	RecoveryCodesGenerated         bool `json:"recovery_codes_generated"`
+	RecoveryCodesViewed            bool `json:"recovery_codes_viewed"`
+	RecoveryCodesMigrationRequired bool `json:"recovery_codes_migration_required"`
 }
 
 func get2FAStatus(c *gin.Context) (status Status2FA) {
@@ -31,6 +35,9 @@ func get2FAStatus(c *gin.Context) (status Status2FA) {
 		status.OTPStatus = userPtr.EnabledOTP()
 		status.PasskeyStatus = userPtr.EnabledPasskey() && passkey.Enabled()
 		status.Enabled = status.OTPStatus || status.PasskeyStatus
+		status.RecoveryCodesGenerated = userPtr.RecoveryCodeGenerated()
+		status.RecoveryCodesViewed = userPtr.RecoveryCodeViewed()
+		status.RecoveryCodesMigrationRequired = userPtr.RecoveryCodesMigrationRequired()
 	}
 	return
 }
@@ -71,48 +78,45 @@ func Start2FASecureSessionByOTP(c *gin.Context) {
 		OTP          string `json:"otp"`
 		RecoveryCode string `json:"recovery_code"`
 	}
-	if !api.BindAndValid(c, &json) {
+	if !cosy.BindAndValid(c, &json) {
 		return
 	}
 	u := api.CurrentUser(c)
 	if !u.EnabledOTP() {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "User has not configured OTP as 2FA",
-		})
+		cosy.ErrHandler(c, user.ErrUserNotEnabledOTPAs2FA)
 		return
 	}
 
 	if json.OTP == "" && json.RecoveryCode == "" {
-		c.JSON(http.StatusBadRequest, LoginResponse{
-			Message: "The user has enabled OTP as 2FA",
-		})
+		cosy.ErrHandler(c, user.ErrOTPOrRecoveryCodeEmpty)
 		return
 	}
 
-	if err := user.VerifyOTP(u, json.OTP, json.RecoveryCode); err != nil {
-		c.JSON(http.StatusBadRequest, LoginResponse{
-			Message: "Invalid OTP or recovery code",
-		})
+	verificationResult, err := user.VerifyOTP(u, json.OTP, json.RecoveryCode)
+	if err != nil {
+		cosy.ErrHandler(c, err)
 		return
 	}
 
 	sessionId := user.SetSecureSessionID(u.ID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"session_id": sessionId,
+		"session_id":                sessionId,
+		"session_ttl":               int(user.SecureSessionDuration().Seconds()),
+		"used_legacy_recovery_code": verificationResult.UsedLegacyRecoveryCode,
 	})
 }
 
 func BeginStart2FASecureSessionByPasskey(c *gin.Context) {
 	if !passkey.Enabled() {
-		api.ErrHandler(c, fmt.Errorf("WebAuthn settings are not configured"))
+		cosy.ErrHandler(c, user.ErrWebAuthnNotConfigured)
 		return
 	}
 	webauthnInstance := passkey.GetInstance()
 	u := api.CurrentUser(c)
 	options, sessionData, err := webauthnInstance.BeginLogin(u)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	passkeySessionID := uuid.NewString()
@@ -125,13 +129,13 @@ func BeginStart2FASecureSessionByPasskey(c *gin.Context) {
 
 func FinishStart2FASecureSessionByPasskey(c *gin.Context) {
 	if !passkey.Enabled() {
-		api.ErrHandler(c, fmt.Errorf("WebAuthn settings are not configured"))
+		cosy.ErrHandler(c, user.ErrWebAuthnNotConfigured)
 		return
 	}
 	passkeySessionID := c.GetHeader("X-Passkey-Session-ID")
-	sessionDataBytes, ok := cache.Get(passkeySessionID)
+	sessionDataBytes, ok := cache.Take(passkeySessionID)
 	if !ok {
-		api.ErrHandler(c, fmt.Errorf("session not found"))
+		cosy.ErrHandler(c, user.ErrSessionNotFound)
 		return
 	}
 	sessionData := sessionDataBytes.(*webauthn.SessionData)
@@ -139,7 +143,7 @@ func FinishStart2FASecureSessionByPasskey(c *gin.Context) {
 	u := api.CurrentUser(c)
 	credential, err := webauthnInstance.FinishLogin(u, *sessionData, c.Request)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	rawID := strings.TrimRight(base64.StdEncoding.EncodeToString(credential.ID), "=")
@@ -151,6 +155,7 @@ func FinishStart2FASecureSessionByPasskey(c *gin.Context) {
 	sessionId := user.SetSecureSessionID(u.ID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"session_id": sessionId,
+		"session_id":  sessionId,
+		"session_ttl": int(user.SecureSessionDuration().Seconds()),
 	})
 }

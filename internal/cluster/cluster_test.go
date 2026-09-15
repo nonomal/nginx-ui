@@ -1,9 +1,10 @@
 package cluster
 
 import (
+	"testing"
+
 	"github.com/0xJacky/Nginx-UI/settings"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func Test_parseNodeUrl(t *testing.T) {

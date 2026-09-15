@@ -1,26 +1,59 @@
 <script setup lang="ts">
-import { BellOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, InfoCircleOutlined, WarningOutlined } from '@ant-design/icons-vue'
 import type { Ref } from 'vue'
-import { message } from 'ant-design-vue'
-import notification from '@/api/notification'
 import type { Notification } from '@/api/notification'
-import { NotificationTypeT } from '@/constants'
-import { useUserStore } from '@/pinia'
+import { BellOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined, InfoCircleOutlined, WarningOutlined } from '@antdv-next/icons'
+import dayjs from 'dayjs'
+import relativeTime from 'dayjs/plugin/relativeTime'
+import notificationApi from '@/api/notification'
+import { List, ListItem, ListItemMeta } from '@/components/List'
 import { detailRender } from '@/components/Notification/detailRender'
-import type { customRender } from '@/components/StdDesign/StdDataDisplay/StdTableTransformer'
+import { NotificationTypeT } from '@/constants'
+import { useUserStore, useWebSocketEventBusStore } from '@/pinia'
+
+defineProps<{
+  headerRef: HTMLElement
+}>()
+
+const { message, notification } = App.useApp()
+
+dayjs.extend(relativeTime)
 
 const loading = ref(false)
 
 const { unreadCount } = storeToRefs(useUserStore())
 
 const data = ref([]) as Ref<Notification[]>
+
+const websocketEventBus = useWebSocketEventBusStore()
+let notificationSubscriptionId: string | null = null
+
+onMounted(() => {
+  notificationSubscriptionId = websocketEventBus.subscribe('notification', (data: Notification) => {
+    const typeTrans = {
+      0: 'error',
+      1: 'warning',
+      2: 'info',
+      3: 'success',
+    }
+
+    notification[typeTrans[data.type]]({
+      title: $gettext(data.title),
+      description: detailRender({ text: data.details, record: data }),
+    })
+  })
+})
+
+onUnmounted(() => {
+  if (notificationSubscriptionId) {
+    websocketEventBus.unsubscribe(notificationSubscriptionId)
+  }
+})
+
 function init() {
   loading.value = true
-  notification.get_list().then(r => {
+  notificationApi.getList({ sort: 'desc', order_by: 'created_at' }).then(r => {
     data.value = r.data
-    unreadCount.value = r.pagination.total
-  }).catch(e => {
-    message.error($gettext(e?.message ?? 'Server error'))
+    unreadCount.value = r.pagination?.total || 0
   }).finally(() => {
     loading.value = false
   })
@@ -38,21 +71,18 @@ watch(open, v => {
 })
 
 function clear() {
-  notification.clear().then(() => {
+  notificationApi.clear().then(() => {
     message.success($gettext('Cleared successfully'))
     data.value = []
     unreadCount.value = 0
-  }).catch(e => {
-    message.error($gettext(e?.message ?? 'Server error'))
+    open.value = false
   })
 }
 
 function remove(id: number) {
-  notification.destroy(id).then(() => {
+  notificationApi.deleteItem(id).then(() => {
     message.success($gettext('Removed successfully'))
     init()
-  }).catch(e => {
-    message.error($gettext(e?.message ?? 'Server error'))
   })
 }
 
@@ -68,8 +98,9 @@ function viewAll() {
     <APopover
       v-model:open="open"
       placement="bottomRight"
-      overlay-class-name="notification-popover"
       trigger="click"
+      :get-popup-container="() => headerRef"
+      :styles="{ root: { width: '400px' }, container: { width: '400px' } }"
     >
       <ABadge
         :count="unreadCount"
@@ -95,49 +126,59 @@ function viewAll() {
 
         <ADivider class="mt-2 mb-2" />
 
-        <AList
+        <List
           :data-source="data"
           class="max-h-96 overflow-scroll"
         >
           <template #renderItem="{ item }">
-            <AListItem>
-              <template #actions>
-                <span
-                  key="list-loadmore-remove"
-                  class="cursor-pointer"
-                  @click="remove(item.id)"
-                >
-                  <DeleteOutlined />
-                </span>
-              </template>
-              <AListItemMeta
-                :title="$gettext(item.title)"
-                :description="detailRender({ text: item.details, record: item } as customRender)"
-              >
+            <ListItem>
+              <ListItemMeta>
                 <template #avatar>
                   <div>
                     <CloseCircleOutlined
-                      v-if="item.type === NotificationTypeT.Error"
+                      v-if="Number(item.type) === NotificationTypeT.Error"
                       class="text-red-500"
                     />
                     <WarningOutlined
-                      v-else-if="item.type === NotificationTypeT.Warning"
+                      v-else-if="Number(item.type) === NotificationTypeT.Warning"
                       class="text-orange-400"
                     />
                     <InfoCircleOutlined
-                      v-else-if="item.type === NotificationTypeT.Info"
+                      v-else-if="Number(item.type) === NotificationTypeT.Info"
                       class="text-blue-500"
                     />
                     <CheckCircleOutlined
-                      v-else-if="item.type === NotificationTypeT.Success"
+                      v-else-if="Number(item.type) === NotificationTypeT.Success"
                       class="text-green-500"
                     />
                   </div>
                 </template>
-              </AListItemMeta>
-            </AListItem>
+                <template #title>
+                  <div class="flex justify-between items-center">
+                    {{ $gettext(item.title) }}
+                    <span class="text-xs text-trueGray-400 font-normal">
+                      {{ dayjs(item.created_at).fromNow() }}
+                    </span>
+                  </div>
+                </template>
+                <template #description>
+                  <div class="flex justify-between items-center">
+                    <div>
+                      {{ $gettext(item.content, item.details ?? undefined) }}
+                    </div>
+                    <span
+                      key="list-loadmore-remove"
+                      class="cursor-pointer"
+                      @click="remove(item.id)"
+                    >
+                      <DeleteOutlined />
+                    </span>
+                  </div>
+                </template>
+              </ListItemMeta>
+            </ListItem>
           </template>
-        </AList>
+        </List>
         <ADivider class="m-0 mb-2" />
         <div class="flex justify-center p-2">
           <a @click="viewAll">{{ $gettext('View all notifications') }}</a>
@@ -147,18 +188,12 @@ function viewAll() {
   </span>
 </template>
 
-<style lang="less">
-.notification-popover {
-  width: 400px;
-}
-</style>
-
 <style scoped lang="less">
-:deep(.ant-list-item-meta) {
+:deep(.nui-list-item-meta) {
   align-items: center !important;
 }
 
-:deep(.ant-list-item-meta-avatar) {
+:deep(.nui-list-item-meta-avatar) {
   font-size: 24px;
 }
 </style>

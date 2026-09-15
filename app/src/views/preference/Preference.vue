@@ -1,96 +1,34 @@
 <script setup lang="ts">
-import { message } from 'ant-design-vue'
-import type { Ref } from 'vue'
-import { storeToRefs } from 'pinia'
-import FooterToolBar from '@/components/FooterToolbar/FooterToolBar.vue'
-import settings from '@/api/settings'
-import BasicSettings from '@/views/preference/BasicSettings.vue'
-import OpenAISettings from '@/views/preference/OpenAISettings.vue'
-import NginxSettings from '@/views/preference/NginxSettings.vue'
-import type { Settings } from '@/views/preference/typedef'
-import LogrotateSettings from '@/views/preference/LogrotateSettings.vue'
-import { useSettingsStore } from '@/pinia'
-import AuthSettings from '@/views/preference/AuthSettings.vue'
-import use2FAModal from '@/components/TwoFA/use2FAModal'
+import FooterToolBar from '@/components/FooterToolbar'
+import { useGlobalStore } from '@/pinia'
+import {
+  AccessTokens,
+  AppSettings,
+  AuthSettings,
+  CertSettings,
+  ExternalNotify,
+  GeoLiteSettings,
+  HealthCheckSettings,
+  HTTPSettings,
+  LogrotateSettings,
+  NginxSettings,
+  NodeSettings,
+  OpenAISettings,
+  ServerSettings,
+  TerminalSettings,
+} from '@/views/preference/tabs'
+import useSystemSettingsStore from './store'
 
-const data = ref<Settings>({
-  server: {
-    http_host: '0.0.0.0',
-    http_port: '9000',
-    run_mode: 'debug',
-    jwt_secret: '',
-    start_cmd: '',
-    email: '',
-    http_challenge_port: '9180',
-    github_proxy: '',
-    ca_dir: '',
-    node_secret: '',
-    cert_renewal_interval: 7,
-    recursive_nameservers: [],
-    name: '',
-  },
-  nginx: {
-    access_log_path: '',
-    error_log_path: '',
-    config_dir: '',
-    pid_path: '',
-    reload_cmd: '',
-    restart_cmd: '',
-  },
-  openai: {
-    model: '',
-    base_url: '',
-    proxy: '',
-    token: '',
-  },
-  logrotate: {
-    enabled: false,
-    cmd: '',
-    interval: 1440,
-  },
-  auth: {
-    ip_white_list: [],
-    ban_threshold_minutes: 10,
-    max_attempts: 10,
-  },
-})
+const systemSettingsStore = useSystemSettingsStore()
+const globalStore = useGlobalStore()
+const isDemoResolved = ref(false)
 
-settings.get<Settings>().then(r => {
-  data.value = r
-})
-
-const settingsStore = useSettingsStore()
-const { server_name } = storeToRefs(settingsStore)
-const errors = ref({}) as Ref<Record<string, Record<string, string>>>
-const refAuthSettings = ref()
-
-async function save() {
-  // fix type
-  data.value.server.http_challenge_port = data.value.server.http_challenge_port.toString()
-
-  const otpModal = use2FAModal()
-
-  otpModal.open().then(() => {
-    settings.save(data.value).then(r => {
-      if (!settingsStore.is_remote)
-        server_name.value = r?.server?.name ?? ''
-      data.value = r
-      refAuthSettings.value?.getBannedIPs?.()
-      message.success($gettext('Save successfully'))
-      errors.value = {}
-    }).catch(e => {
-      errors.value = e.errors
-      message.error(e?.message ?? $gettext('Server error'))
-    })
-  })
-}
-
-provide('data', data)
-provide('errors', errors)
+void systemSettingsStore.getSettings()
 
 const router = useRouter()
 const route = useRoute()
-const activeKey = ref('basic')
+const activeKey = ref('server')
+const isNginxControlEditing = ref(false)
 
 watch(activeKey, () => {
   router.push({
@@ -100,53 +38,68 @@ watch(activeKey, () => {
   })
 })
 
-onMounted(() => {
+onMounted(async () => {
   if (route.query?.tab)
     activeKey.value = route.query.tab.toString()
-})
 
+  await globalStore.ensureDemoFlag()
+  if (globalStore.isDemo && activeKey.value === 'terminal')
+    activeKey.value = 'server'
+  isDemoResolved.value = true
+})
 </script>
 
 <template>
   <ACard :title="$gettext('Preference')">
     <div class="preference-container">
-      <ATabs v-model:active-key="activeKey">
-        <ATabPane
-          key="basic"
-          :tab="$gettext('Basic')"
-        >
-          <BasicSettings />
-        </ATabPane>
-        <ATabPane
-          key="auth"
-          :tab="$gettext('Auth')"
-        >
-          <AuthSettings ref="refAuthSettings" />
-        </ATabPane>
-        <ATabPane
-          key="nginx"
-          :tab="$gettext('Nginx')"
-        >
-          <NginxSettings />
-        </ATabPane>
-        <ATabPane
-          key="openai"
-          :tab="$gettext('OpenAI')"
-        >
-          <OpenAISettings />
-        </ATabPane>
-        <ATabPane
-          key="logrotate"
-          :tab="$gettext('Logrotate')"
-        >
-          <LogrotateSettings />
-        </ATabPane>
+      <ATabs
+        v-model:active-key="activeKey"
+        :items="[
+          { key: 'server', label: $gettext('Server') },
+          { key: 'app', label: $gettext('App') },
+          { key: 'external_notify', label: $gettext('External Notify') },
+          { key: 'health_check', label: $gettext('Health Check') },
+          { key: 'node', label: $gettext('Node') },
+          { key: 'http', label: $gettext('HTTP') },
+          ...(isDemoResolved && !globalStore.isDemo
+            ? [{ key: 'terminal', label: $gettext('Terminal') }]
+            : []),
+          { key: 'auth', label: $gettext('Auth') },
+          { key: 'access_tokens', label: $gettext('Access Tokens') },
+          { key: 'cert', label: $gettext('Cert') },
+          { key: 'nginx', label: $gettext('Nginx') },
+          { key: 'openai', label: $gettext('LLM') },
+          { key: 'logrotate', label: $gettext('Logrotate') },
+          { key: 'geolite', label: $gettext('GeoLite') },
+        ]"
+      >
+        <template #contentRender="{ item }">
+          <ServerSettings v-if="item.key === 'server'" />
+          <AppSettings v-else-if="item.key === 'app'" />
+          <ExternalNotify v-else-if="item.key === 'external_notify'" />
+          <HealthCheckSettings v-else-if="item.key === 'health_check'" />
+          <NodeSettings v-else-if="item.key === 'node'" />
+          <HTTPSettings v-else-if="item.key === 'http'" />
+          <TerminalSettings v-else-if="item.key === 'terminal'" />
+          <AuthSettings v-else-if="item.key === 'auth'" />
+          <AccessTokens v-else-if="item.key === 'access_tokens'" />
+          <CertSettings v-else-if="item.key === 'cert'" />
+          <NginxSettings v-else-if="item.key === 'nginx'" @control-editing="isNginxControlEditing = $event" />
+          <OpenAISettings v-else-if="item.key === 'openai'" />
+          <LogrotateSettings v-else-if="item.key === 'logrotate'" />
+          <GeoLiteSettings v-else-if="item.key === 'geolite'" />
+        </template>
       </ATabs>
     </div>
-    <FooterToolBar>
+    <FooterToolBar
+      v-if="activeKey !== 'external_notify'
+        && activeKey !== 'geolite'
+        && activeKey !== 'access_tokens'
+        && !(activeKey === 'nginx' && isNginxControlEditing)"
+    >
       <AButton
         type="primary"
-        @click="save"
+        @click="systemSettingsStore.save"
       >
         {{ $gettext('Save') }}
       </AButton>
@@ -157,8 +110,11 @@ onMounted(() => {
 <style lang="less" scoped>
 .preference-container {
   width: 100%;
-  max-width: 600px;
-  margin: 0 auto;
+  margin: 0;
   padding: 0 10px;
+
+  :deep(label) {
+    font-weight: 500;
+  }
 }
 </style>

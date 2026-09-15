@@ -28,13 +28,14 @@ func newNotification(db *gorm.DB, opts ...gen.DOOption) notification {
 
 	tableName := _notification.notificationDo.TableName()
 	_notification.ALL = field.NewAsterisk(tableName)
-	_notification.ID = field.NewInt(tableName, "id")
+	_notification.ID = field.NewUint64(tableName, "id")
 	_notification.CreatedAt = field.NewTime(tableName, "created_at")
 	_notification.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_notification.DeletedAt = field.NewField(tableName, "deleted_at")
 	_notification.Type = field.NewInt(tableName, "type")
 	_notification.Title = field.NewString(tableName, "title")
-	_notification.Details = field.NewString(tableName, "details")
+	_notification.Content = field.NewString(tableName, "content")
+	_notification.Details = field.NewField(tableName, "details")
 
 	_notification.fillFieldMap()
 
@@ -45,13 +46,14 @@ type notification struct {
 	notificationDo
 
 	ALL       field.Asterisk
-	ID        field.Int
+	ID        field.Uint64
 	CreatedAt field.Time
 	UpdatedAt field.Time
 	DeletedAt field.Field
 	Type      field.Int
 	Title     field.String
-	Details   field.String
+	Content   field.String
+	Details   field.Field
 
 	fieldMap map[string]field.Expr
 }
@@ -68,13 +70,14 @@ func (n notification) As(alias string) *notification {
 
 func (n *notification) updateTableName(table string) *notification {
 	n.ALL = field.NewAsterisk(table)
-	n.ID = field.NewInt(table, "id")
+	n.ID = field.NewUint64(table, "id")
 	n.CreatedAt = field.NewTime(table, "created_at")
 	n.UpdatedAt = field.NewTime(table, "updated_at")
 	n.DeletedAt = field.NewField(table, "deleted_at")
 	n.Type = field.NewInt(table, "type")
 	n.Title = field.NewString(table, "title")
-	n.Details = field.NewString(table, "details")
+	n.Content = field.NewString(table, "content")
+	n.Details = field.NewField(table, "details")
 
 	n.fillFieldMap()
 
@@ -91,13 +94,14 @@ func (n *notification) GetFieldByName(fieldName string) (field.OrderExpr, bool) 
 }
 
 func (n *notification) fillFieldMap() {
-	n.fieldMap = make(map[string]field.Expr, 7)
+	n.fieldMap = make(map[string]field.Expr, 8)
 	n.fieldMap["id"] = n.ID
 	n.fieldMap["created_at"] = n.CreatedAt
 	n.fieldMap["updated_at"] = n.UpdatedAt
 	n.fieldMap["deleted_at"] = n.DeletedAt
 	n.fieldMap["type"] = n.Type
 	n.fieldMap["title"] = n.Title
+	n.fieldMap["content"] = n.Content
 	n.fieldMap["details"] = n.Details
 }
 
@@ -114,7 +118,7 @@ func (n notification) replaceDB(db *gorm.DB) notification {
 type notificationDo struct{ gen.DO }
 
 // FirstByID Where("id=@id")
-func (n notificationDo) FirstByID(id int) (result *model.Notification, err error) {
+func (n notificationDo) FirstByID(id uint64) (result *model.Notification, err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder
@@ -129,7 +133,7 @@ func (n notificationDo) FirstByID(id int) (result *model.Notification, err error
 }
 
 // DeleteByID update @@table set deleted_at=strftime('%Y-%m-%d %H:%M:%S','now') where id=@id
-func (n notificationDo) DeleteByID(id int) (err error) {
+func (n notificationDo) DeleteByID(id uint64) (err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder

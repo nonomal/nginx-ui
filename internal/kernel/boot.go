@@ -1,0 +1,255 @@
+package kernel
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"mime"
+	"os"
+	"path"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"runtime/debug"
+
+	"github.com/0xJacky/Nginx-UI/internal/analytic"
+	"github.com/0xJacky/Nginx-UI/internal/cache"
+	"github.com/0xJacky/Nginx-UI/internal/cert"
+	"github.com/0xJacky/Nginx-UI/internal/cluster"
+	"github.com/0xJacky/Nginx-UI/internal/cron"
+	"github.com/0xJacky/Nginx-UI/internal/demo"
+	"github.com/0xJacky/Nginx-UI/internal/docker"
+	"github.com/0xJacky/Nginx-UI/internal/event"
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/internal/mcp"
+	"github.com/0xJacky/Nginx-UI/internal/nginx_log"
+	"github.com/0xJacky/Nginx-UI/internal/nodeauth"
+	"github.com/0xJacky/Nginx-UI/internal/passkey"
+	"github.com/0xJacky/Nginx-UI/internal/self_check"
+	"github.com/0xJacky/Nginx-UI/internal/sitecheck"
+	"github.com/0xJacky/Nginx-UI/internal/system"
+	"github.com/0xJacky/Nginx-UI/internal/user"
+	"github.com/0xJacky/Nginx-UI/internal/validation"
+	"github.com/0xJacky/Nginx-UI/model"
+	"github.com/0xJacky/Nginx-UI/query"
+	"github.com/0xJacky/Nginx-UI/settings"
+	"github.com/google/uuid"
+	"github.com/uozi-tech/cosy"
+	sqlite "github.com/uozi-tech/cosy-driver-sqlite"
+	"github.com/uozi-tech/cosy/kernel"
+	"github.com/uozi-tech/cosy/logger"
+	cModel "github.com/uozi-tech/cosy/model"
+	cSettings "github.com/uozi-tech/cosy/settings"
+)
+
+var Context context.Context
+
+func Boot(ctx context.Context) {
+	defer recovery()
+
+	Context = ctx
+
+	if cSettings.SLSSettings.Enable() {
+		logger.InitAuditSLSProducer(ctx)
+	}
+
+	async := []func(){
+		// First: a demo node swaps in fabricated providers, and several
+		// consumers below build themselves behind a sync.Once. Installing after
+		// them would silently have no effect.
+		InitDemoOverrides,
+		InitJsExtensionType,
+		InitInstallSecret,
+		InitNodeSecret,
+		InitNodeInstanceID,
+		InitCryptoSecret,
+		analytic.Initialize,
+		validation.Init,
+		self_check.Init,
+		func() {
+			InitDatabase(ctx)
+			cache.Init(ctx)
+		},
+		CheckAndCleanupOTA,
+	}
+
+	syncs := []func(ctx context.Context){
+		analytic.RecordServerAnalytic,
+		event.InitEventSystem,
+		event.InitWebSocketHub,
+	}
+
+	for _, v := range async {
+		v()
+	}
+
+	for _, v := range syncs {
+		name := runtime.FuncForPC(reflect.ValueOf(v).Pointer()).Name()
+		go kernel.Run(ctx, name, v)
+	}
+}
+
+func InitAfterDatabase(ctx context.Context) {
+	syncs := []func(ctx context.Context){
+		InitUser,
+		registerPredefinedUser,
+		cluster.RegisterPredefinedNodes,
+		RegisterAcmeUser,
+		// Before sitecheck.Init, so the site prober sees the seeded rows.
+		demo.Seed,
+		sitecheck.Init,
+	}
+
+	for _, v := range syncs {
+		v(ctx)
+	}
+
+	asyncs := []func(ctx context.Context){
+		cert.InitRegister,
+		cron.InitCronJobs,
+		analytic.RetrieveNodesStatus,
+		passkey.Init,
+		mcp.Init,
+		nginx_log.InitializeServices,
+		user.InitTokenCache,
+	}
+
+	for _, v := range asyncs {
+		name := runtime.FuncForPC(reflect.ValueOf(v).Pointer()).Name()
+		go kernel.Run(ctx, name, v)
+	}
+}
+
+func recovery() {
+	if err := recover(); err != nil {
+		buf := make([]byte, 1024)
+		runtime.Stack(buf, false)
+		logger.Errorf("%s\n%s", err, buf)
+	}
+}
+
+// RecoverWithLocalPanicLog writes a recovered panic to the local logger when
+// the SLS producer is unavailable, then re-panics so Cosy can handle it.
+func RecoverWithLocalPanicLog() {
+	if err := recover(); err != nil {
+		if !logger.HasSLSSupport() {
+			logger.Errorf("Application initialization panic before SLS was ready: %v\n%s", err, debug.Stack())
+		}
+		panic(err)
+	}
+}
+
+func InitDatabase(ctx context.Context) {
+	cModel.ResolvedModels()
+	// Skip install
+	if settings.NodeSettings.SkipInstallation {
+		skipInstall()
+	}
+
+	db := cosy.InitDB(sqlite.Open(path.Dir(cSettings.ConfPath), settings.DatabaseSettings))
+	model.Use(db)
+	query.Init(db)
+	if err := nodeauth.MigrateLegacyNodeCredentials(db); err != nil {
+		logger.Fatal("Migrate legacy node credentials: ", err)
+	}
+
+	InitAfterDatabase(ctx)
+}
+
+func InitNodeSecret() {
+	if settings.NodeSettings.Secret == "" {
+		logger.Info("Secret is empty, generating...")
+		uuidStr := uuid.New().String()
+		err := settings.Update(func() {
+			settings.NodeSettings.Secret = uuidStr
+		})
+		if err != nil {
+			logger.Error("Error save settings", err)
+		}
+		logger.Info("Generated legacy node API secret")
+	}
+}
+
+// InitDemoOverrides swaps real providers for fabricated ones when this node is
+// a public demo. It does nothing at all on a normal installation.
+func InitDemoOverrides() {
+	demo.Install()
+}
+
+func InitNodeInstanceID() {
+	if settings.NodeSettings.InstanceID != "" {
+		return
+	}
+	if err := settings.Update(func() {
+		settings.NodeSettings.InstanceID = uuid.NewString()
+	}); err != nil {
+		logger.Fatal("Generate node instance ID: ", err)
+	}
+}
+
+func InitInstallSecret() {
+	if err := system.EnsureInstallSecret(); err != nil {
+		logger.Error("Error preparing install secret", err)
+	}
+}
+
+func InitCryptoSecret() {
+	if settings.CryptoSettings.Secret == "" {
+		logger.Info("Secret is empty, generating...")
+
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			logger.Error("Generate Secret failed: ", err)
+			return
+		}
+
+		secret := hex.EncodeToString(key)
+
+		err := settings.Update(func() {
+			settings.CryptoSettings.Secret = secret
+		})
+		if err != nil {
+			logger.Error("Error save settings", err)
+		}
+		logger.Info("Secret Generated")
+	}
+}
+
+func InitJsExtensionType() {
+	// Hack: fix wrong Content Type of .js file on some OS platforms
+	// See https://github.com/golang/go/issues/32350
+	_ = mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
+}
+
+// CheckAndCleanupOTA Check and cleanup OTA update temporary containers
+func CheckAndCleanupOTA() {
+	if !helper.InNginxUIOfficialDocker() {
+		// If running on Windows, clean up .nginx-ui.old.* files
+		if runtime.GOOS == "windows" {
+			execPath, err := os.Executable()
+			if err != nil {
+				logger.Error("Failed to get executable path:", err)
+				return
+			}
+
+			execDir := filepath.Dir(execPath)
+			logger.Info("Cleaning up .nginx-ui.old.* files on Windows in:", execDir)
+
+			pattern := filepath.Join(execDir, ".nginx-ui.old.*")
+			files, err := filepath.Glob(pattern)
+			if err != nil {
+				logger.Error("Failed to list .nginx-ui.old.* files:", err)
+			} else {
+				for _, file := range files {
+					_ = os.Remove(file)
+				}
+			}
+		}
+		return
+	}
+	// Execute the third step cleanup operation at startup
+	err := docker.UpgradeStepThree()
+	if err != nil {
+		logger.Error("Failed to cleanup OTA containers:", err)
+	}
+}

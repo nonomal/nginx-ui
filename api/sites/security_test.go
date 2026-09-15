@@ -1,0 +1,167 @@
+package sites
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/0xJacky/Nginx-UI/internal/cache"
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
+	internaluser "github.com/0xJacky/Nginx-UI/internal/user"
+	"github.com/0xJacky/Nginx-UI/model"
+	"github.com/0xJacky/Nginx-UI/query"
+	"github.com/gin-gonic/gin"
+	cosysettings "github.com/uozi-tech/cosy/settings"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+func setupSiteSecurityTest(t *testing.T) string {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	cache.InitInMemoryCache()
+
+	originalJWTSecret := cosysettings.AppSettings.JwtSecret
+	cosysettings.AppSettings.JwtSecret = "test-secret"
+
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+
+	if err := db.AutoMigrate(&model.User{}, &model.AuthToken{}, &model.Passkey{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+
+	model.Use(db)
+	query.Use(db)
+	query.SetDefault(db)
+
+	otpUser := &model.User{
+		Model:     model.Model{ID: 2},
+		Name:      "otp",
+		Status:    true,
+		Language:  "en",
+		OTPSecret: []byte("otp-enabled"),
+	}
+	if err := db.Create(otpUser).Error; err != nil {
+		t.Fatalf("failed to create test user: %v", err)
+	}
+
+	payload, err := internaluser.GenerateJWT(otpUser)
+	if err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cache.Shutdown()
+		cosysettings.AppSettings.JwtSecret = originalJWTSecret
+	})
+
+	return payload.Token
+}
+
+func TestSiteSaveRequiresSecureSessionForOTPUser(t *testing.T) {
+	token := setupSiteSecurityTest(t)
+
+	router := gin.New()
+	group := router.Group("/", middleware.AuthRequired())
+	mutations := group.Group("", middleware.RequireSecureSession())
+	mutations.POST("sites/:name", SaveSite)
+
+	body, err := json.Marshal(gin.H{
+		"content": "server {\n    listen 80;\n}\n",
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/sites/example.com", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", token)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", recorder.Code)
+	}
+}
+
+func TestEnableMaintenanceSiteRejectsInvalidSiteName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "name", Value: "..%2F..%2Fnginx.conf"}}
+
+	EnableMaintenanceSite(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d with body %q", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("invalid site name")) {
+		t.Fatalf("expected invalid site name response, got %q", recorder.Body.String())
+	}
+}
+
+func TestGetSiteRejectsInvalidSiteName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "name", Value: "..%2F..%2Fnginx.conf"}}
+
+	GetSite(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d with body %q", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("invalid site name")) {
+		t.Fatalf("expected invalid site name response, got %q", recorder.Body.String())
+	}
+}
+
+func TestDeleteSiteRejectsInvalidSiteName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "name", Value: "..%2F..%2Fnginx.conf"}}
+
+	DeleteSite(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d with body %q", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("invalid site name")) {
+		t.Fatalf("expected invalid site name response, got %q", recorder.Body.String())
+	}
+}
+
+func TestRenameSiteRejectsInvalidNewName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("sites/:name/rename", RenameSite)
+
+	body, err := json.Marshal(gin.H{
+		"new_name": "../../etc/passwd",
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/sites/example.com/rename", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d with body %q", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("invalid site name")) {
+		t.Fatalf("expected invalid site name response, got %q", recorder.Body.String())
+	}
+}

@@ -1,71 +1,57 @@
 package config
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
+	"net/http"
+	"path/filepath"
+
 	"github.com/0xJacky/Nginx-UI/internal/config"
 	"github.com/0xJacky/Nginx-UI/internal/helper"
 	"github.com/0xJacky/Nginx-UI/internal/nginx"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/gin-gonic/gin"
-	"github.com/sashabaranov/go-openai"
-	"net/http"
-	"os"
+	"github.com/uozi-tech/cosy"
 )
 
-type APIConfigResp struct {
-	config.Config
-	SyncNodeIds   []int `json:"sync_node_ids" gorm:"serializer:json"`
-	SyncOverwrite bool  `json:"sync_overwrite"`
-}
-
 func GetConfig(c *gin.Context) {
-	name := c.Param("name")
-
-	path := nginx.GetConfPath("/", name)
-	if !helper.IsUnderDirectory(path, nginx.GetConfPath()) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"message": "path is not under the nginx conf path",
-		})
-		return
+	// An encoded value is already exact, so it must not also go through the
+	// repeated-unescape loop — a filename containing a literal '%' would be
+	// corrupted by it. Raw values keep the historical behaviour.
+	path, encoded := helper.DecodePathParam(c.Query("path"))
+	if !encoded {
+		path = helper.UnescapeURL(path)
 	}
 
-	stat, err := os.Stat(path)
+	absPath, err := config.ResolveAbsoluteOrRelativeConfPath(path)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
-	content, err := os.ReadFile(path)
+	stat, err := nginx.Stat(absPath)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
+
+	content, err := nginx.ReadFile(absPath)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+
 	q := query.Config
-	g := query.ChatGPTLog
-	chatgpt, err := g.Where(g.Name.Eq(path)).FirstOrCreate()
+	cfg, err := q.Where(q.Filepath.Eq(absPath)).FirstOrInit()
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
-	if chatgpt.Content == nil {
-		chatgpt.Content = make([]openai.ChatCompletionMessage, 0)
-	}
-
-	cfg, err := q.Where(q.Filepath.Eq(path)).FirstOrInit()
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	c.JSON(http.StatusOK, APIConfigResp{
-		Config: config.Config{
-			Name:            stat.Name(),
-			Content:         string(content),
-			ChatGPTMessages: chatgpt.Content,
-			FilePath:        path,
-			ModifiedAt:      stat.ModTime(),
-		},
+	c.JSON(http.StatusOK, config.Config{
+		Name:          stat.Name(),
+		Content:       string(content),
+		FilePath:      absPath,
+		ModifiedAt:    stat.ModTime(),
+		Dir:           filepath.Dir(absPath),
 		SyncNodeIds:   cfg.SyncNodeIds,
 		SyncOverwrite: cfg.SyncOverwrite,
 	})

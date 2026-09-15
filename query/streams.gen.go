@@ -28,12 +28,20 @@ func newStream(db *gorm.DB, opts ...gen.DOOption) stream {
 
 	tableName := _stream.streamDo.TableName()
 	_stream.ALL = field.NewAsterisk(tableName)
-	_stream.ID = field.NewInt(tableName, "id")
+	_stream.ID = field.NewUint64(tableName, "id")
 	_stream.CreatedAt = field.NewTime(tableName, "created_at")
 	_stream.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_stream.DeletedAt = field.NewField(tableName, "deleted_at")
 	_stream.Path = field.NewString(tableName, "path")
 	_stream.Advanced = field.NewBool(tableName, "advanced")
+	_stream.NamespaceID = field.NewUint64(tableName, "namespace_id")
+	_stream.SyncNodeIDs = field.NewField(tableName, "sync_node_ids")
+	_stream.RemoteEnabled = field.NewBool(tableName, "remote_enabled")
+	_stream.Namespace = streamBelongsToNamespace{
+		db: db.Session(&gorm.Session{}),
+
+		RelationField: field.NewRelation("Namespace", "model.Namespace"),
+	}
 
 	_stream.fillFieldMap()
 
@@ -43,13 +51,17 @@ func newStream(db *gorm.DB, opts ...gen.DOOption) stream {
 type stream struct {
 	streamDo
 
-	ALL       field.Asterisk
-	ID        field.Int
-	CreatedAt field.Time
-	UpdatedAt field.Time
-	DeletedAt field.Field
-	Path      field.String
-	Advanced  field.Bool
+	ALL           field.Asterisk
+	ID            field.Uint64
+	CreatedAt     field.Time
+	UpdatedAt     field.Time
+	DeletedAt     field.Field
+	Path          field.String
+	Advanced      field.Bool
+	NamespaceID   field.Uint64
+	SyncNodeIDs   field.Field
+	RemoteEnabled field.Bool
+	Namespace     streamBelongsToNamespace
 
 	fieldMap map[string]field.Expr
 }
@@ -66,12 +78,15 @@ func (s stream) As(alias string) *stream {
 
 func (s *stream) updateTableName(table string) *stream {
 	s.ALL = field.NewAsterisk(table)
-	s.ID = field.NewInt(table, "id")
+	s.ID = field.NewUint64(table, "id")
 	s.CreatedAt = field.NewTime(table, "created_at")
 	s.UpdatedAt = field.NewTime(table, "updated_at")
 	s.DeletedAt = field.NewField(table, "deleted_at")
 	s.Path = field.NewString(table, "path")
 	s.Advanced = field.NewBool(table, "advanced")
+	s.NamespaceID = field.NewUint64(table, "namespace_id")
+	s.SyncNodeIDs = field.NewField(table, "sync_node_ids")
+	s.RemoteEnabled = field.NewBool(table, "remote_enabled")
 
 	s.fillFieldMap()
 
@@ -88,29 +103,117 @@ func (s *stream) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (s *stream) fillFieldMap() {
-	s.fieldMap = make(map[string]field.Expr, 6)
+	s.fieldMap = make(map[string]field.Expr, 10)
 	s.fieldMap["id"] = s.ID
 	s.fieldMap["created_at"] = s.CreatedAt
 	s.fieldMap["updated_at"] = s.UpdatedAt
 	s.fieldMap["deleted_at"] = s.DeletedAt
 	s.fieldMap["path"] = s.Path
 	s.fieldMap["advanced"] = s.Advanced
+	s.fieldMap["namespace_id"] = s.NamespaceID
+	s.fieldMap["sync_node_ids"] = s.SyncNodeIDs
+	s.fieldMap["remote_enabled"] = s.RemoteEnabled
+
 }
 
 func (s stream) clone(db *gorm.DB) stream {
 	s.streamDo.ReplaceConnPool(db.Statement.ConnPool)
+	s.Namespace.db = db.Session(&gorm.Session{Initialized: true})
+	s.Namespace.db.Statement.ConnPool = db.Statement.ConnPool
 	return s
 }
 
 func (s stream) replaceDB(db *gorm.DB) stream {
 	s.streamDo.ReplaceDB(db)
+	s.Namespace.db = db.Session(&gorm.Session{})
 	return s
+}
+
+type streamBelongsToNamespace struct {
+	db *gorm.DB
+
+	field.RelationField
+}
+
+func (a streamBelongsToNamespace) Where(conds ...field.Expr) *streamBelongsToNamespace {
+	if len(conds) == 0 {
+		return &a
+	}
+
+	exprs := make([]clause.Expression, 0, len(conds))
+	for _, cond := range conds {
+		exprs = append(exprs, cond.BeCond().(clause.Expression))
+	}
+	a.db = a.db.Clauses(clause.Where{Exprs: exprs})
+	return &a
+}
+
+func (a streamBelongsToNamespace) WithContext(ctx context.Context) *streamBelongsToNamespace {
+	a.db = a.db.WithContext(ctx)
+	return &a
+}
+
+func (a streamBelongsToNamespace) Session(session *gorm.Session) *streamBelongsToNamespace {
+	a.db = a.db.Session(session)
+	return &a
+}
+
+func (a streamBelongsToNamespace) Model(m *model.Stream) *streamBelongsToNamespaceTx {
+	return &streamBelongsToNamespaceTx{a.db.Model(m).Association(a.Name())}
+}
+
+func (a streamBelongsToNamespace) Unscoped() *streamBelongsToNamespace {
+	a.db = a.db.Unscoped()
+	return &a
+}
+
+type streamBelongsToNamespaceTx struct{ tx *gorm.Association }
+
+func (a streamBelongsToNamespaceTx) Find() (result *model.Namespace, err error) {
+	return result, a.tx.Find(&result)
+}
+
+func (a streamBelongsToNamespaceTx) Append(values ...*model.Namespace) (err error) {
+	targetValues := make([]interface{}, len(values))
+	for i, v := range values {
+		targetValues[i] = v
+	}
+	return a.tx.Append(targetValues...)
+}
+
+func (a streamBelongsToNamespaceTx) Replace(values ...*model.Namespace) (err error) {
+	targetValues := make([]interface{}, len(values))
+	for i, v := range values {
+		targetValues[i] = v
+	}
+	return a.tx.Replace(targetValues...)
+}
+
+func (a streamBelongsToNamespaceTx) Delete(values ...*model.Namespace) (err error) {
+	targetValues := make([]interface{}, len(values))
+	for i, v := range values {
+		targetValues[i] = v
+	}
+	return a.tx.Delete(targetValues...)
+}
+
+func (a streamBelongsToNamespaceTx) Clear() error {
+	return a.tx.Clear()
+}
+
+func (a streamBelongsToNamespaceTx) Count() int64 {
+	return a.tx.Count()
+}
+
+func (a streamBelongsToNamespaceTx) Unscoped() *streamBelongsToNamespaceTx {
+	a.tx = a.tx.Unscoped()
+	return &a
 }
 
 type streamDo struct{ gen.DO }
 
 // FirstByID Where("id=@id")
-func (s streamDo) FirstByID(id int) (result *model.Stream, err error) {
+func (s streamDo) FirstByID(id uint64) (result *model.Stream, err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder
@@ -125,7 +228,7 @@ func (s streamDo) FirstByID(id int) (result *model.Stream, err error) {
 }
 
 // DeleteByID update @@table set deleted_at=strftime('%Y-%m-%d %H:%M:%S','now') where id=@id
-func (s streamDo) DeleteByID(id int) (err error) {
+func (s streamDo) DeleteByID(id uint64) (err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder

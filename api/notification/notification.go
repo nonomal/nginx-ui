@@ -1,24 +1,24 @@
 package notification
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
-	"github.com/0xJacky/Nginx-UI/internal/cosy"
+	"net/http"
+
 	"github.com/0xJacky/Nginx-UI/model"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cast"
-	"net/http"
+	"github.com/uozi-tech/cosy"
 )
 
 func Get(c *gin.Context) {
 	n := query.Notification
 
-	id := cast.ToInt(c.Param("id"))
+	id := cast.ToUint64(c.Param("id"))
 
 	data, err := n.FirstByID(id)
 
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
@@ -26,7 +26,9 @@ func Get(c *gin.Context) {
 }
 
 func GetList(c *gin.Context) {
-	cosy.Core[model.Notification](c).PagingList()
+	cosy.Core[model.Notification](c).
+		SetEqual("type").
+		PagingList()
 }
 
 func Destroy(c *gin.Context) {
@@ -39,14 +41,14 @@ func DestroyAll(c *gin.Context) {
 	err := db.Exec("DELETE FROM notifications").Error
 
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	// reset auto increment
 	err = db.Exec("UPDATE sqlite_sequence SET seq = 0 WHERE name = 'notifications';").Error
 
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 

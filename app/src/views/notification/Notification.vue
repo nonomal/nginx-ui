@@ -1,39 +1,39 @@
 <script setup lang="ts">
-import { message } from 'ant-design-vue'
-import StdCurd from '@/components/StdDesign/StdDataDisplay/StdCurd.vue'
+import { StdCurd } from '@uozi-admin/curd'
 import notification from '@/api/notification'
 import { useUserStore } from '@/pinia'
-import notificationColumns from '@/views/notification/notificationColumns'
+import notificationColumns from './notificationColumns'
 
 const { unreadCount } = storeToRefs(useUserStore())
+const { message } = useGlobalApp()
 
-const curd = ref()
+const curd = useTemplateRef('curd')
 function clear() {
   notification.clear().then(() => {
     message.success($gettext('Cleared successfully'))
-    curd.value.get_list()
+    curd.value?.refresh()
     unreadCount.value = 0
-  }).catch(e => {
-    message.error($gettext(e?.message ?? 'Server error'))
   })
 }
 
 watch(unreadCount, () => {
-  curd.value.get_list()
+  curd.value?.refresh()
 })
 </script>
 
 <template>
   <StdCurd
     ref="curd"
+    :scroll-x="1000"
     :title="$gettext('Notification')"
     :columns="notificationColumns"
     :api="notification"
     disable-modify
     disable-add
+    disable-export
     disable-trash
   >
-    <template #extra>
+    <template #beforeListActions>
       <APopconfirm
         :cancel-text="$gettext('No')"
         :ok-text="$gettext('OK')"

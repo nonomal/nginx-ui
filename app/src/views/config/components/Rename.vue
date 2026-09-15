@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { message } from 'ant-design-vue'
 import config from '@/api/config'
+import NodeSelector from '@/components/NodeSelector'
 import use2FAModal from '@/components/TwoFA/use2FAModal'
-import NodeSelector from '@/components/NodeSelector/NodeSelector.vue'
+import { useConfigFavorites } from '@/composables/useConfigFavorites'
 
 const emit = defineEmits(['renamed'])
+const { message } = useGlobalApp()
+const { renameFavorites } = useConfigFavorites()
 const visible = ref(false)
 const isDirFlag = ref(false)
 
@@ -15,6 +17,7 @@ const data = ref({
   sync_node_ids: [] as number[],
 })
 
+// eslint-disable-next-line vue/require-typed-ref
 const refForm = ref()
 
 function open(basePath: string, origName: string, isDir: boolean) {
@@ -29,19 +32,20 @@ defineExpose({
   open,
 })
 
+const otpModal = use2FAModal()
+
 function ok() {
   refForm.value.validate().then(() => {
     const { basePath, orig_name, new_name, sync_node_ids } = data.value
 
-    const otpModal = use2FAModal()
-
     otpModal.open().then(() => {
+      // Note: API will handle URL encoding of path segments
       config.rename(basePath, orig_name, new_name, sync_node_ids).then(() => {
         visible.value = false
         message.success($gettext('Rename successfully'))
+
+        renameFavorites(basePath, orig_name, new_name, isDirFlag.value)
         emit('renamed')
-      }).catch(e => {
-        message.error(`${$gettext('Server error')} ${e?.message}`)
       })
     })
   })

@@ -1,48 +1,221 @@
 package main
 
 import (
-	"flag"
+	"context"
+	"crypto/tls"
 	"fmt"
-	"github.com/0xJacky/Nginx-UI/internal/kernal"
-	"github.com/0xJacky/Nginx-UI/internal/logger"
-	"github.com/0xJacky/Nginx-UI/internal/nginx"
+	"net"
+	"os"
+	"os/signal"
+	"runtime/debug"
+	"syscall"
+
+	"github.com/0xJacky/Nginx-UI/internal/cert"
+	"github.com/0xJacky/Nginx-UI/internal/cmd"
+	"github.com/0xJacky/Nginx-UI/internal/process"
+
+	"code.pfad.fr/risefront"
+	"github.com/0xJacky/Nginx-UI/internal/kernel"
+	"github.com/0xJacky/Nginx-UI/internal/migrate"
+	"github.com/0xJacky/Nginx-UI/model"
 	"github.com/0xJacky/Nginx-UI/router"
 	"github.com/0xJacky/Nginx-UI/settings"
 	"github.com/gin-gonic/gin"
-	"github.com/jpillora/overseer"
-	"net/http"
-	"time"
+	"github.com/uozi-tech/cosy"
+	cKernel "github.com/uozi-tech/cosy/kernel"
+	"github.com/uozi-tech/cosy/logger"
+	cRouter "github.com/uozi-tech/cosy/router"
+	cSettings "github.com/uozi-tech/cosy/settings"
 )
 
-func Program(state overseer.State) {
-	defer logger.Sync()
+func Program(ctx context.Context, confPath string) func(l []net.Listener) error {
+	return func(l []net.Listener) error {
+		listener := process.NewLifecycleListener(l[0])
+		programCtx, programCancel := context.WithCancel(ctx)
+		defer programCancel()
 
-	logger.Infof("Nginx configuration directory: %s", nginx.GetConfPath())
+		cosy.RegisterMigrationsBeforeAutoMigrate(migrate.BeforeAutoMigrate)
 
-	kernal.Boot()
+		cosy.RegisterModels(model.GenerateAllModel()...)
 
-	if state.Listener != nil {
-		err := http.Serve(state.Listener, router.InitRouter())
-		if err != nil {
-			logger.Error(err)
+		cosy.RegisterMigration(migrate.Migrations)
+
+		cosy.RegisterInitFunc(func() {
+			defer kernel.RecoverWithLocalPanicLog()
+
+			kernel.Boot(programCtx)
+			router.InitRouter()
+		})
+
+		// Initialize settings package
+		settings.Init(confPath)
+
+		// Set gin mode
+		gin.SetMode(cSettings.ServerSettings.RunMode)
+
+		// Initialize logger package
+		logger.Init(cSettings.ServerSettings.RunMode)
+		defer logger.Sync()
+		defer logger.Info("Server exited")
+
+		// Gin router initialization
+		cRouter.Init()
+
+		// Kernel boot
+		cKernel.Boot(programCtx)
+
+		// Get the HTTP handler from Cosy router
+		handler := cRouter.GetEngine()
+
+		// Configure TLS if HTTPS is enabled
+		var tlsConfig *tls.Config
+		if cSettings.ServerSettings.EnableHTTPS {
+			// Load TLS certificate
+			err := cert.LoadServerTLSCertificate()
+			if err != nil {
+				logger.Fatalf("Failed to load TLS certificate: %v", err)
+				return err
+			}
+
+			// Configure ALPN protocols based on settings
+			// Protocol negotiation priority is fixed: h3 -> h2 -> h1
+			var nextProtos []string
+			if cSettings.ServerSettings.EnableH3 {
+				nextProtos = append(nextProtos, "h3")
+			}
+			if cSettings.ServerSettings.EnableH2 {
+				nextProtos = append(nextProtos, "h2")
+			}
+			// HTTP/1.1 is always supported as fallback
+			nextProtos = append(nextProtos, "http/1.1")
+
+			tlsConfig = &tls.Config{
+				GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+					return cert.GetServerTLSCertificate()
+				},
+				MinVersion: tls.VersionTLS12,
+				NextProtos: nextProtos,
+			}
 		}
-	}
 
-	logger.Info("Server exited")
+		// Create and initialize the server factory
+		serverFactory := cKernel.NewServerFactory(handler, tlsConfig)
+		if err := serverFactory.Initialize(); err != nil {
+			logger.Fatalf("Failed to initialize server factory: %v", err)
+			return err
+		}
+
+		go func() {
+			logger.Info("Started graceful shutdown handler goroutine")
+			// Wait for context cancellation
+			<-programCtx.Done()
+
+			// Graceful shutdown
+			logger.Info("Shutting down servers...")
+			if err := serverFactory.Shutdown(programCtx); err != nil {
+				if kernel.IsUnknownServerListenError(err) {
+					logger.Errorf("Error during server shutdown: %v", err)
+				}
+			}
+			logger.Info("Graceful shutdown handler goroutine completed")
+		}()
+
+		// Start the servers
+		if err := serverFactory.Start(programCtx, listener); err != nil {
+			logger.Fatalf("Failed to start servers: %v", err)
+			return err
+		}
+
+		select {
+		case <-programCtx.Done():
+		case <-listener.Done():
+			logger.Info("Listener closed during process handover, stopping program services")
+			programCancel()
+		}
+
+		// Graceful shutdown
+		logger.Info("Shutting down servers...")
+		if err := serverFactory.Shutdown(programCtx); err != nil {
+			if kernel.IsUnknownServerListenError(err) {
+				logger.Errorf("Error during server shutdown: %v", err)
+			}
+		}
+
+		return nil
+	}
 }
 
+//go:generate go generate ./cmd/...
 func main() {
-	var confPath string
-	flag.StringVar(&confPath, "config", "app.ini", "Specify the configuration file")
-	flag.Parse()
+	appCmd := cmd.NewAppCmd()
 
+	confPath := appCmd.String("config")
 	settings.Init(confPath)
 
-	gin.SetMode(settings.ServerSettings.RunMode)
+	mainCtx, mainCancel := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	defer mainCancel()
 
-	overseer.Run(overseer.Config{
-		Program:          Program,
-		Address:          fmt.Sprintf("%s:%s", settings.ServerSettings.HttpHost, settings.ServerSettings.HttpPort),
-		TerminateTimeout: 5 * time.Second,
+	pidPath := appCmd.String("pidfile")
+	if pidPath != "" {
+		if err := process.WritePIDFile(pidPath); err != nil {
+			logger.Fatalf("Failed to write PID file: %v", err)
+		}
+		defer process.RemovePIDFile(pidPath)
+	}
+
+	kernel.Anchor()
+
+	var programCancel context.CancelFunc
+
+	err := risefront.New(mainCtx, risefront.Config{
+		Run: func(l []net.Listener) error {
+			// Create a new context for the program itself, derived from the main context.
+			programCtx, cancel := context.WithCancel(mainCtx)
+			// Store the cancel function so the Shutdown callback can use it.
+			programCancel = cancel
+			err := Program(programCtx, confPath)(l)
+
+			// After a graceful handover this process does not exit: risefront
+			// keeps it alive as a connection proxy in front of the newly spawned
+			// binary. Its heap is dead but not yet returned to the OS, and inside
+			// a memory-limited container the retired resident set is charged
+			// against the same limit as the new process. Hand it back eagerly
+			// instead of waiting for the background scavenger.
+			debug.FreeOSMemory()
+
+			return err
+		},
+		Shutdown: func() {
+			// This is called by risefront.Restart() to shut down the old program.
+			if programCancel != nil {
+				programCancel()
+			}
+		},
+		Name:      "nginx-ui",
+		Addresses: []string{fmt.Sprintf("%s:%d", cSettings.ServerSettings.Host, cSettings.ServerSettings.Port)},
+		LogHandler: func(loglevel risefront.LogLevel, kind string, args ...any) {
+			logger := logger.GetLogger()
+			args = append([]any{kind}, args...)
+			switch loglevel {
+			case risefront.DebugLevel:
+				logger.Debug(args...)
+			case risefront.InfoLevel:
+				logger.Info(args...)
+			case risefront.WarnLevel:
+				logger.Warn(args...)
+			case risefront.ErrorLevel:
+				logger.Error(args...)
+			case risefront.FatalLevel:
+				logger.Fatal(args...)
+			case risefront.PanicLevel:
+				logger.Panic(args...)
+			default:
+				logger.Error(args...)
+			}
+		},
 	})
+	if err != nil && kernel.IsUnknownServerListenError(err) {
+		logger.Error(err)
+		os.Exit(1)
+	}
 }

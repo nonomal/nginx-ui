@@ -1,22 +1,43 @@
 <script setup lang="ts">
-import { message } from 'ant-design-vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import type { NginxStatusResponse } from '@/api/ngx'
+import type { HttpConfig } from '@/lib/http/types'
+import { ReloadOutlined } from '@antdv-next/icons'
+import { v4 as uuid } from 'uuid'
 import ngx from '@/api/ngx'
-import { logLevel } from '@/views/config/constants'
 import { NginxStatus } from '@/constants'
-import { useGlobalStore } from '@/pinia/moudule/global'
+import { logLevel } from '@/constants/config'
+import { useGlobalStore } from '@/pinia'
+import { getRestartErrorMessage, isRestartOutcomeUnknown, shouldShowRestartError } from './restartRecovery'
+
+const restartPollInterval = 750
+const restartTimeout = 60_000
+const restartRequestTimeout = 5_000
 
 const global = useGlobalStore()
 const { nginxStatus: status } = storeToRefs(global)
+const { message } = App.useApp()
+let isDisposed = false
 
-async function getStatus() {
-  const r = await ngx.status()
-  if (r?.running === true)
+function applyStatus(response: NginxStatusResponse) {
+  if (response.control?.state === 'running' && response.control.action === 'restart') {
+    status.value = NginxStatus.Restarting
+  }
+  else if (response.control?.state === 'running' && response.control.action === 'reload') {
+    status.value = NginxStatus.Reloading
+  }
+  else if (response.running) {
     status.value = NginxStatus.Running
-  else
+  }
+  else {
     status.value = NginxStatus.Stopped
+  }
+}
 
-  return r
+async function getStatus(config?: HttpConfig) {
+  const response = await ngx.status(config)
+  applyStatus(response)
+
+  return response
 }
 
 function reloadNginx() {
@@ -25,28 +46,91 @@ function reloadNginx() {
     if (r.level < logLevel.Warn)
       message.success($gettext('Nginx reloaded successfully'))
     else if (r.level === logLevel.Warn)
-      message.warn(r.message)
+      message.warning(r.message)
     else
       message.error(r.message)
-  }).catch(e => {
-    message.error(`${$gettext('Server error')} ${e?.message}`)
   }).finally(() => getStatus())
 }
 
 async function restartNginx() {
-  status.value = NginxStatus.Restarting
-  await ngx.restart()
+  if (status.value === NginxStatus.Restarting)
+    return
 
-  getStatus().then(r => {
-    if (r.level < logLevel.Warn)
+  const operationId = uuid()
+  const previousStatus = status.value
+  status.value = NginxStatus.Restarting
+  try {
+    await ngx.restart(operationId, {
+      skipErrHandling: true,
+      timeout: restartRequestTimeout,
+    })
+  }
+  catch (error) {
+    if (!isRestartOutcomeUnknown(error)) {
+      if (shouldShowRestartError(error))
+        message.error(getRestartErrorMessage(error) || $gettext('Failed to restart Nginx'))
+      status.value = previousStatus
+      await refreshStatusSilently()
+      return
+    }
+  }
+
+  await waitForRestart(operationId)
+}
+
+async function waitForRestart(operationId: string) {
+  const deadline = Date.now() + restartTimeout
+  let lastResponse: NginxStatusResponse | undefined
+
+  while (Date.now() < deadline) {
+    if (isDisposed)
+      return
+
+    await new Promise(resolve => setTimeout(resolve, restartPollInterval))
+    if (isDisposed)
+      return
+
+    try {
+      lastResponse = await getStatus({
+        skipErrHandling: true,
+        timeout: restartRequestTimeout,
+      })
+    }
+    catch {
+      continue
+    }
+
+    const operation = lastResponse.control
+    if (!operation || operation.id !== operationId || operation.state === 'running')
+      continue
+
+    if (operation.state === 'failed') {
+      message.error(operation.message || $gettext('Failed to restart Nginx'))
+      return
+    }
+
+    if (operation.level < logLevel.Warn)
       message.success($gettext('Nginx restarted successfully'))
-    else if (r.level === logLevel.Warn)
-      message.warn(r.message)
+    else if (operation.level === logLevel.Warn && operation.message)
+      message.warning(operation.message)
     else
-      message.error(r.message)
-  }).catch(e => {
-    message.error(`${$gettext('Server error')} ${e?.message}`)
-  })
+      message.error(operation.message || $gettext('Failed to restart Nginx'))
+    return
+  }
+
+  if (lastResponse) {
+    status.value = lastResponse.running ? NginxStatus.Running : NginxStatus.Stopped
+  }
+  message.warning($gettext('Nginx restart status could not be confirmed. Please check the Nginx status.'))
+}
+
+async function refreshStatusSilently() {
+  try {
+    await getStatus({ skipErrHandling: true })
+  }
+  catch {
+    // Keep the last known state when status cannot be refreshed.
+  }
 }
 
 const visible = ref(false)
@@ -54,6 +138,14 @@ const visible = ref(false)
 watch(visible, v => {
   if (v)
     getStatus()
+})
+
+onMounted(() => {
+  getStatus()
+})
+
+onBeforeUnmount(() => {
+  isDisposed = true
 })
 </script>
 
@@ -91,6 +183,8 @@ watch(visible, v => {
         <AButton
           size="small"
           type="link"
+          :loading="status === NginxStatus.Restarting"
+          :disabled="status === NginxStatus.Reloading"
           @click="restartNginx"
         >
           {{ $gettext('Restart') }}
@@ -98,6 +192,8 @@ watch(visible, v => {
         <AButton
           size="small"
           type="link"
+          :loading="status === NginxStatus.Reloading"
+          :disabled="status === NginxStatus.Restarting"
           @click="reloadNginx"
         >
           {{ $gettext('Reload') }}

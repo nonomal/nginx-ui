@@ -1,12 +1,14 @@
 package middleware
 
 import (
-	"github.com/0xJacky/Nginx-UI/internal/logger"
+	"net/http"
+
+	"github.com/0xJacky/Nginx-UI/internal/nodeauth"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/gin-gonic/gin"
 	"github.com/pretty66/websocketproxy"
 	"github.com/spf13/cast"
-	"net/http"
+	"github.com/uozi-tech/cosy/logger"
 )
 
 func ProxyWs() gin.HandlerFunc {
@@ -16,7 +18,7 @@ func ProxyWs() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		id := cast.ToInt(nodeID)
+		id := cast.ToUint64(nodeID)
 		if id == 0 {
 			c.Next()
 			return
@@ -24,15 +26,14 @@ func ProxyWs() gin.HandlerFunc {
 
 		defer c.Abort()
 
-		env := query.Environment
-		environment, err := env.Where(env.ID.Eq(id)).First()
-
+		nodeQuery := query.Node
+		node, err := nodeQuery.Where(nodeQuery.ID.Eq(id)).First()
 		if err != nil {
 			logger.Error(err)
 			return
 		}
 
-		decodedUri, err := environment.GetWebSocketURL(c.Request.RequestURI)
+		decodedUri, err := node.GetWebSocketURL(c.Request.RequestURI)
 
 		if err != nil {
 			logger.Error(err)
@@ -42,8 +43,11 @@ func ProxyWs() gin.HandlerFunc {
 		logger.Debug("Proxy request", decodedUri)
 
 		wp, err := websocketproxy.NewProxy(decodedUri, func(r *http.Request) error {
-			r.Header.Set("X-Node-Secret", environment.Token)
-			return nil
+			r.Header.Del("X-Node-ID")
+			queryValues := r.URL.Query()
+			queryValues.Del("x_node_id")
+			r.URL.RawQuery = queryValues.Encode()
+			return nodeauth.SignWebSocketHeaders(node, r.URL.String(), r.Header)
 		})
 
 		if err != nil {

@@ -1,65 +1,115 @@
 package model
 
 import (
+	"os"
+	"time"
+
 	"github.com/0xJacky/Nginx-UI/internal/helper"
 	"github.com/0xJacky/Nginx-UI/internal/nginx"
-	"github.com/go-acme/lego/v4/certcrypto"
-	"github.com/go-acme/lego/v4/certificate"
-	"github.com/lib/pq"
+	"github.com/go-acme/lego/v5/certcrypto"
+	"github.com/go-acme/lego/v5/certificate"
 	"gorm.io/gorm/clause"
-	"os"
 )
 
 const (
 	AutoCertSync              = 2
 	AutoCertEnabled           = 1
 	AutoCertDisabled          = -1
+	AutoCertSelfSigned        = 3
 	CertChallengeMethodHTTP01 = "http01"
 	CertChallengeMethodDNS01  = "dns01"
+
+	// CertStatus values track the most recent issuance attempt outcome.
+	// Empty string represents pre-migration / imported certificates.
+	CertStatusPending = "pending"
+	CertStatusSuccess = "success"
+	CertStatusFailure = "failure"
 )
 
 type CertDomains []string
 
 type CertificateResource struct {
 	*certificate.Resource
+	Domain            string `json:"domain,omitempty"`
 	PrivateKey        []byte `json:"private_key"`
 	Certificate       []byte `json:"certificate"`
 	IssuerCertificate []byte `json:"issuerCertificate"`
 	CSR               []byte `json:"csr"`
 }
 
+// SelfSignedCertConfig stores self-signed-specific generation parameters so the
+// auto-renewal job can regenerate a certificate with the same settings.
+type SelfSignedCertConfig struct {
+	IPAddresses  []string `json:"ip_addresses"`
+	ValidityDays int      `json:"validity_days"`
+}
+
 type Cert struct {
 	Model
-	Name                    string               `json:"name"`
-	Domains                 pq.StringArray       `json:"domains" gorm:"type:text[]"`
-	Filename                string               `json:"filename"`
-	SSLCertificatePath      string               `json:"ssl_certificate_path"`
-	SSLCertificateKeyPath   string               `json:"ssl_certificate_key_path"`
-	AutoCert                int                  `json:"auto_cert"`
-	ChallengeMethod         string               `json:"challenge_method"`
-	DnsCredentialID         int                  `json:"dns_credential_id"`
-	DnsCredential           *DnsCredential       `json:"dns_credential,omitempty"`
-	ACMEUserID              int                  `json:"acme_user_id"`
-	ACMEUser                *AcmeUser            `json:"acme_user,omitempty"`
-	KeyType                 certcrypto.KeyType   `json:"key_type"`
-	Log                     string               `json:"log"`
-	Resource                *CertificateResource `json:"-" gorm:"serializer:json"`
-	SyncNodeIds             []int                `json:"sync_node_ids" gorm:"serializer:json"`
-	MustStaple              bool                 `json:"must_staple"`
-	LegoDisableCNAMESupport bool                 `json:"lego_disable_cname_support"`
+	Name                              string                `json:"name"`
+	Domains                           []string              `json:"domains" gorm:"serializer:json"`
+	Filename                          string                `json:"filename"`
+	SSLCertificatePath                string                `json:"ssl_certificate_path"`
+	SSLCertificateKeyPath             string                `json:"ssl_certificate_key_path"`
+	Fingerprint                       string                `json:"fingerprint" gorm:"index"`
+	AutoCert                          int                   `json:"auto_cert"`
+	ChallengeMethod                   string                `json:"challenge_method"`
+	Profile                           string                `json:"profile"`
+	DnsCredentialID                   uint64                `json:"dns_credential_id"`
+	DnsCredential                     *DnsCredential        `json:"dns_credential,omitempty"`
+	ACMEUserID                        uint64                `json:"acme_user_id"`
+	ACMEUser                          *AcmeUser             `json:"acme_user,omitempty"`
+	KeyType                           certcrypto.KeyType    `json:"key_type"`
+	Log                               string                `json:"log"`
+	Resource                          *CertificateResource  `json:"-" gorm:"serializer:json[aes]"`
+	SyncNodeIds                       []uint64              `json:"sync_node_ids" gorm:"serializer:json"`
+	MustStaple                        bool                  `json:"must_staple"`
+	LegoDisableCNAMESupport           bool                  `json:"lego_disable_cname_support"`
+	DisableAuthoritativeNSPropagation bool                  `json:"disable_authoritative_ns_propagation"`
+	EnableCommonName                  bool                  `json:"enable_common_name"`
+	RevokeOld                         bool                  `json:"revoke_old"`
+	SelfSignedConfig                  *SelfSignedCertConfig `json:"self_signed_config,omitempty" gorm:"serializer:json"`
+	LastAutoRenewAt                   *time.Time            `json:"-"`
+	LastAutoRenewError                string                `json:"-"`
+	NextAutoRenewAt                   *time.Time            `json:"-"`
+	LastRenewalInfoCheckAt            *time.Time            `json:"-"`
+	AutoRenewScheduleFingerprint      string                `json:"-"`
+	LastExpiryNotifyAt                *time.Time            `json:"-"`
+	LastExpiryNotifyNotAfter          *time.Time            `json:"-"`
+	LastExpiryNotifyStage             string                `json:"-"`
+	LastDeploymentIssueHash           string                `json:"-"`
+	LastDeploymentIssueNotifyAt       *time.Time            `json:"-"`
+	Status                            string                `json:"status"`
+	LastError                         string                `json:"last_error"`
+	LastAttemptAt                     *time.Time            `json:"last_attempt_at"`
 }
 
 func FirstCert(confName string) (c Cert, err error) {
-	err = db.First(&c, &Cert{
+	err = db.Limit(1).Where(&Cert{
 		Filename: confName,
-	}).Error
+	}).Find(&c).Error
 
 	return
 }
 
 func FirstOrCreateCert(confName string, keyType certcrypto.KeyType) (c Cert, err error) {
+	normalizedKeyType := helper.GetKeyType(keyType)
+
 	// Filename is used to check whether this site is enabled
-	err = db.FirstOrCreate(&c, &Cert{Name: confName, Filename: confName, KeyType: keyType}).Error
+	err = db.Where("filename = ? AND key_type IN ?", confName,
+		helper.GetKeyTypeAliasStrings(normalizedKeyType)).
+		Attrs(&Cert{Name: confName, Filename: confName, KeyType: normalizedKeyType}).
+		Assign(&Cert{KeyType: normalizedKeyType}).
+		FirstOrCreate(&c).Error
+	return
+}
+
+func FirstOrInit(confName string, keyType certcrypto.KeyType) (c Cert, err error) {
+	normalizedKeyType := helper.GetKeyType(keyType)
+	err = db.Where("name = ? AND filename = ? AND key_type IN ?", confName, confName,
+		helper.GetKeyTypeAliasStrings(normalizedKeyType)).
+		FirstOrInit(&c, &Cert{Name: confName, Filename: confName, KeyType: normalizedKeyType}).Error
+	c.KeyType = normalizedKeyType
 	return
 }
 
@@ -113,8 +163,17 @@ func (c *Cert) GetKeyType() certcrypto.KeyType {
 }
 
 func (c *CertificateResource) GetResource() certificate.Resource {
+	domains := c.Resource.Domains
+	if len(domains) == 0 && c.Domain != "" {
+		domains = []string{c.Domain}
+	}
+
 	return certificate.Resource{
-		Domain:            c.Resource.Domain,
+		ID:                c.Resource.ID,
+		Domains:           domains,
+		KeyType:           c.Resource.KeyType,
+		PreferredChain:    c.Resource.PreferredChain,
+		Profile:           c.Resource.Profile,
 		CertURL:           c.Resource.CertURL,
 		CertStableURL:     c.Resource.CertStableURL,
 		PrivateKey:        c.PrivateKey,
@@ -122,4 +181,13 @@ func (c *CertificateResource) GetResource() certificate.Resource {
 		IssuerCertificate: c.IssuerCertificate,
 		CSR:               c.CSR,
 	}
+}
+
+// GetCertList returns all certificates
+func GetCertList() (c []*Cert) {
+	if db == nil {
+		return
+	}
+	db.Find(&c)
+	return
 }

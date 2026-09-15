@@ -1,0 +1,107 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "[Go] Start Backend",
+      "type": "shell",
+      "command": "air",
+      "isBackground": true,
+      "presentation": {
+        "panel": "shared",
+        "group": "dev"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[App] Start Frontend",
+      "type": "shell",
+      "command": "bun run dev",
+      "isBackground": true,
+      "presentation": {
+        "panel": "shared",
+        "group": "dev"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[Docs] Start Documentation",
+      "type": "shell",
+      "command": "bun run docs:dev",
+      "isBackground": true,
+      "presentation": {
+        "panel": "shared",
+        "group": "dev"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[All] Start All Services",
+      "dependsOrder": "parallel",
+      "dependsOn": [
+        "[Go] Start Backend",
+        "[App] Start Frontend",
+        "[Docs] Start Documentation"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[App] Gettext Extract",
+      "type": "shell",
+      "command": "bun run gettext:extract",
+      "isBackground": true,
+      "presentation": {
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[App] ESLint Fix",
+      "type": "shell",
+      "command": "bun run lint:fix",
+      "presentation": {
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[App] Typecheck",
+      "type": "shell",
+      "command": "bun run typecheck",
+      "presentation": {
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[App] Build",
+      "type": "shell",
+      "command": "bun run build",
+      "presentation": {
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[Go] Generate",
+      "type": "shell",
+      "command": "go generate",
+      "presentation": {
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "[All] Bump Version",
+      "type": "shell",
+      "command": "./version.sh",
+      "presentation": {
+        "panel": "new"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

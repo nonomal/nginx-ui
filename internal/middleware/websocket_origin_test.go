@@ -1,0 +1,128 @@
+package middleware
+
+import (
+	"crypto/tls"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/0xJacky/Nginx-UI/internal/nodeauth"
+	"github.com/0xJacky/Nginx-UI/model"
+	"github.com/0xJacky/Nginx-UI/settings"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestCheckWebSocketOrigin(t *testing.T) {
+	originalOrigins := settings.HTTPSettings.WebSocketTrustedOrigins
+	originalSecret := settings.NodeSettings.Secret
+
+	t.Cleanup(func() {
+		settings.HTTPSettings.WebSocketTrustedOrigins = originalOrigins
+		settings.NodeSettings.Secret = originalSecret
+	})
+
+	t.Run("allows same origin requests", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = ""
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req.Host = "admin.example.com"
+		req.TLS = &tls.ConnectionState{}
+		req.Header.Set("Origin", "https://admin.example.com:443")
+
+		assert.True(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("allows reverse proxy forwarded origin", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = ""
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req.Host = "127.0.0.1:9000"
+		req.Header.Set("Origin", "https://panel.example.com")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Host", "panel.example.com")
+
+		assert.True(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("allows reverse proxy forwarded origin with explicit non-default port", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = ""
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req.Host = "127.0.0.1:9000"
+		req.Header.Set("Origin", "http://localhost:8080")
+		req.Header.Set("X-Forwarded-Proto", "http")
+		req.Header.Set("X-Forwarded-Host", "localhost:8080")
+
+		assert.True(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("allows configured trusted origins", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = []string{"http://localhost:5173/"}
+		settings.NodeSettings.Secret = ""
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req.Host = "127.0.0.1:9000"
+		req.Header.Set("Origin", "http://localhost:5173")
+
+		assert.True(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("allows verified node requests without origin", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = "node-secret"
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req = nodeauth.WithPrincipal(req, &nodeauth.Principal{AuthMethod: model.NodeAuthMethodLegacy})
+
+		assert.True(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("allows verified node requests with cross-origin (proxy scenario)", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = "node-secret"
+
+		// Simulates master node proxying WS to child node:
+		// Origin is the browser's controller domain, but authentication middleware
+		// has already attached a verified node principal.
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req.Host = "child-node:9000"
+		req.Header.Set("Origin", "https://master.example.com")
+		req = nodeauth.WithPrincipal(req, &nodeauth.Principal{AuthMethod: model.NodeAuthMethodLegacy})
+
+		assert.True(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("rejects cross site requests", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = ""
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req.Host = "admin.example.com"
+		req.TLS = &tls.ConnectionState{}
+		req.Header.Set("Origin", "https://evil.example.com")
+
+		assert.False(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("rejects same host requests when non-default origin port is lost", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = ""
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws", nil)
+		req.Host = "localhost"
+		req.Header.Set("Origin", "http://localhost:8080")
+
+		assert.False(t, CheckWebSocketOrigin(req))
+	})
+
+	t.Run("rejects missing origin without trusted node secret", func(t *testing.T) {
+		settings.HTTPSettings.WebSocketTrustedOrigins = nil
+		settings.NodeSettings.Secret = "node-secret"
+
+		req := httptest.NewRequest("GET", "http://127.0.0.1/ws?token=abc123", nil)
+
+		assert.False(t, CheckWebSocketOrigin(req))
+	})
+}

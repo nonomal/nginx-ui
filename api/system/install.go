@@ -1,74 +1,87 @@
 package system
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
-	"github.com/0xJacky/Nginx-UI/internal/kernal"
+	"net/http"
+
+	internalSystem "github.com/0xJacky/Nginx-UI/internal/system"
 	"github.com/0xJacky/Nginx-UI/model"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/0xJacky/Nginx-UI/settings"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/uozi-tech/cosy"
+	cSettings "github.com/uozi-tech/cosy/settings"
 	"golang.org/x/crypto/bcrypt"
-	"net/http"
 )
 
-func installLockStatus() bool {
-	return settings.ServerSettings.SkipInstallation || "" != settings.ServerSettings.JwtSecret
-}
-
 func InstallLockCheck(c *gin.Context) {
+	locked := internalSystem.InstallLockStatus()
+	timeout := false
+
+	if !locked {
+		timeout = internalSystem.IsInstallTimeoutExceeded()
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"lock": installLockStatus(),
+		"lock":    locked,
+		"timeout": timeout,
 	})
 }
 
 type InstallJson struct {
 	Email    string `json:"email" binding:"required,email"`
 	Username string `json:"username" binding:"required,max=255"`
-	Password string `json:"password" binding:"required,max=255"`
-	Database string `json:"database"`
+	Password string `json:"password" binding:"required,max=20"`
 }
 
 func InstallNginxUI(c *gin.Context) {
 	// Visit this api after installed is forbidden
-	if installLockStatus() {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": "installed",
-		})
+	if internalSystem.InstallLockStatus() {
+		cosy.ErrHandler(c, internalSystem.ErrInstalled)
 		return
 	}
+
+	// Check if installation time limit (10 minutes) is exceeded
+	if internalSystem.IsInstallTimeoutExceeded() {
+		cosy.ErrHandler(c, internalSystem.ErrInstallTimeout)
+		return
+	}
+
 	var json InstallJson
-	ok := api.BindAndValid(c, &json)
+	ok := cosy.BindAndValid(c, &json)
 	if !ok {
 		return
 	}
 
-	settings.ServerSettings.JwtSecret = uuid.New().String()
-	settings.ServerSettings.NodeSecret = uuid.New().String()
-	settings.ServerSettings.Email = json.Email
-	if "" != json.Database {
-		settings.ServerSettings.Database = json.Database
-	}
-
-	err := settings.Save()
+	err := settings.Update(func() {
+		cSettings.AppSettings.JwtSecret = uuid.New().String()
+		settings.NodeSettings.Secret = uuid.New().String()
+		settings.CertSettings.Email = json.Email
+	})
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
-	// Init model
-	kernal.InitDatabase()
-
-	pwd, _ := bcrypt.GenerateFromPassword([]byte(json.Password), bcrypt.DefaultCost)
+	pwd, err := bcrypt.GenerateFromPassword([]byte(json.Password), bcrypt.DefaultCost)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
 
 	u := query.User
-	err = u.Create(&model.User{
+	_, err = u.Where(u.ID.Eq(1)).Updates(&model.User{
 		Name:     json.Username,
 		Password: string(pwd),
 	})
 
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
+		return
+	}
+
+	if err := internalSystem.ConsumeInstallSecret(); err != nil {
+		cosy.ErrHandler(c, err)
 		return
 	}
 

@@ -1,5 +1,13 @@
+/// <reference types="vite/client" />
+
+// Extend Window interface
+interface Window {
+  inWorkspace?: boolean
+}
+
 declare module '*.svg' {
-  import React from 'react'
+  import type React from 'react'
+
   const content: React.FC<React.SVGProps<SVGElement>>
   export default content
 }

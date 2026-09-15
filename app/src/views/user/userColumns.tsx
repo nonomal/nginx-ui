@@ -1,28 +1,26 @@
-import { Tag } from 'ant-design-vue'
-import { h } from 'vue'
-import type { Column, JSXElements } from '@/components/StdDesign/types'
-import { input, password } from '@/components/StdDesign/StdDataEntry'
-import type { customRender } from '@/components/StdDesign/StdDataDisplay/StdTableTransformer'
-import { datetime } from '@/components/StdDesign/StdDataDisplay/StdTableTransformer'
+import type { CustomRenderArgs, StdTableColumn } from '@uozi-admin/curd'
+import type { JSXElements } from '@/types'
+import { datetimeRender } from '@uozi-admin/curd'
+import { Tag } from 'antdv-next'
 
-const columns: Column[] = [{
+const columns: StdTableColumn[] = [{
   title: () => $gettext('Username'),
   dataIndex: 'name',
-  sortable: true,
-  pithy: true,
+  sorter: true,
+  pure: true,
   edit: {
-    type: input,
+    type: 'input',
   },
   search: true,
 }, {
   title: () => $gettext('Password'),
   dataIndex: 'password',
-  sortable: true,
-  pithy: true,
+  sorter: true,
+  pure: true,
   edit: {
-    type: password,
-    config: {
-      placeholder: () => $gettext('Leave blank for no change'),
+    type: 'password',
+    password: {
+      placeholder: $gettext('Leave blank for no change'),
       generate: true,
     },
   },
@@ -31,7 +29,7 @@ const columns: Column[] = [{
 }, {
   title: () => $gettext('2FA'),
   dataIndex: 'enabled_2fa',
-  customRender: (args: customRender) => {
+  customRender: (args: CustomRenderArgs) => {
     const template: JSXElements = []
     const { text } = args
     if (text === true || text > 0)
@@ -42,23 +40,25 @@ const columns: Column[] = [{
 
     return h('div', template)
   },
-  sortable: true,
-  pithy: true,
+  sorter: true,
+  pure: true,
 }, {
   title: () => $gettext('Created at'),
   dataIndex: 'created_at',
-  customRender: datetime,
-  sortable: true,
-  pithy: true,
+  customRender: datetimeRender,
+  sorter: true,
+  pure: true,
 }, {
   title: () => $gettext('Updated at'),
   dataIndex: 'updated_at',
-  customRender: datetime,
-  sortable: true,
-  pithy: true,
+  customRender: datetimeRender,
+  sorter: true,
+  pure: true,
 }, {
-  title: () => $gettext('Action'),
-  dataIndex: 'action',
+  title: () => $gettext('Actions'),
+  dataIndex: 'actions',
+  fixed: 'right',
+  width: 250,
 }]
 
 export default columns

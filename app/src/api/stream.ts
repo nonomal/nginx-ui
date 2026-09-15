@@ -1,38 +1,32 @@
-import Curd from '@/api/curd'
-import http from '@/lib/http'
-import type { ChatComplicationMessage } from '@/api/openai'
+import type { Namespace } from './namespace'
+import type { ChatComplicationMessage } from '@/api/llm'
 import type { NgxConfig } from '@/api/ngx'
+import type { ProxyTarget, SiteStatus } from '@/api/site'
+import { extendCurdApi, http, useCurdApi } from '@uozi-admin/request'
 
 export interface Stream {
   modified_at: string
   advanced: boolean
-  enabled: boolean
+  status: SiteStatus
   name: string
   filepath: string
   config: string
-  chatgpt_messages: ChatComplicationMessage[]
+  llm_messages: ChatComplicationMessage[]
   tokenized?: NgxConfig
+  namespace_id: number
+  namespace?: Namespace
+  sync_node_ids: number[]
+  proxy_targets?: ProxyTarget[]
 }
 
-class StreamCurd extends Curd<Stream> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  enable(name: string, config?: any) {
-    return http.post(`${this.baseUrl}/${name}/enable`, undefined, config)
-  }
+const baseUrl = '/streams'
 
-  disable(name: string) {
-    return http.post(`${this.baseUrl}/${name}/disable`)
-  }
-
-  duplicate(name: string, data: { name: string }): Promise<{ dst: string }> {
-    return http.post(`${this.baseUrl}/${name}/duplicate`, data)
-  }
-
-  advance_mode(name: string, data: { advanced: boolean }) {
-    return http.post(`${this.baseUrl}/${name}/advance`, data)
-  }
-}
-
-const stream = new StreamCurd('/stream')
+const stream = extendCurdApi(useCurdApi<Stream>(baseUrl), {
+  enable: (name: string) => http.post(`${baseUrl}/${encodeURIComponent(name)}/enable`),
+  disable: (name: string) => http.post(`${baseUrl}/${encodeURIComponent(name)}/disable`),
+  duplicate: (name: string, data: { name: string }) => http.post(`${baseUrl}/${encodeURIComponent(name)}/duplicate`, data),
+  advance_mode: (name: string, data: { advanced: boolean }) => http.post(`${baseUrl}/${encodeURIComponent(name)}/advance`, data),
+  rename: (name: string, newName: string) => http.post(`${baseUrl}/${encodeURIComponent(name)}/rename`, { new_name: newName }),
+})
 
 export default stream

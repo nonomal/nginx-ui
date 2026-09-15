@@ -2,17 +2,20 @@ package analytic
 
 import (
 	"fmt"
-	"github.com/0xJacky/Nginx-UI/internal/analytic"
-	"github.com/0xJacky/Nginx-UI/internal/helper"
-	"github.com/0xJacky/Nginx-UI/internal/logger"
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/host"
-	"github.com/shirou/gopsutil/v3/load"
-	"github.com/shirou/gopsutil/v3/net"
-	"github.com/spf13/cast"
 	"net/http"
 	"runtime"
 	"time"
+
+	"github.com/0xJacky/Nginx-UI/internal/analytic"
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/internal/kernel"
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
+	"github.com/0xJacky/Nginx-UI/internal/version"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/host"
+	"github.com/shirou/gopsutil/v4/load"
+	"github.com/spf13/cast"
+	"github.com/uozi-tech/cosy/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -20,9 +23,7 @@ import (
 
 func Analytic(c *gin.Context) {
 	var upGrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+		CheckOrigin: middleware.CheckWebSocketOrigin,
 	}
 	// upgrade http to websocket
 	ws, err := upGrader.Upgrade(c.Writer, c.Request, nil)
@@ -33,14 +34,38 @@ func Analytic(c *gin.Context) {
 
 	defer ws.Close()
 
+	peerGone := startWSKeepalive(ws)
+
 	var stat Stat
+
+	// waitNext throttles the loop and reports whether it should keep running.
+	//
+	// Every error path has to go through it. A bare `continue` would spin this
+	// goroutine at full speed while flooding the log, and - because the
+	// cancellation check lives at the bottom of the loop - it would also never
+	// notice that the peer disconnected or that the process is shutting down,
+	// leaking one hot goroutine per dashboard connection.
+	waitNext := func() bool {
+		select {
+		case <-kernel.Context.Done():
+			logger.Debug("Analytic: Context cancelled, closing WebSocket")
+			return false
+		case <-peerGone:
+			logger.Debug("Analytic: peer disconnected, closing WebSocket")
+			return false
+		case <-time.After(1 * time.Second):
+			return true
+		}
+	}
 
 	for {
 		stat.Memory, err = analytic.GetMemoryStat()
-
 		if err != nil {
 			logger.Error(err)
-			return
+			if !waitNext() {
+				return
+			}
+			continue
 		}
 
 		cpuTimesBefore, _ := cpu.Times(false)
@@ -57,30 +82,58 @@ func Analytic(c *gin.Context) {
 			Total:  cast.ToFloat64(fmt.Sprintf("%.2f", (cpuUserUsage+cpuSystemUsage)*100)),
 		}
 
-		stat.Uptime, _ = host.Uptime()
-
-		stat.LoadAvg, _ = load.Avg()
-
-		stat.Disk, err = analytic.GetDiskStat()
-
+		stat.Uptime, err = host.Uptime()
 		if err != nil {
 			logger.Error(err)
-			return
+			if !waitNext() {
+				return
+			}
+			continue
 		}
 
-		network, _ := net.IOCounters(false)
-
-		if len(network) > 0 {
-			stat.Network = network[0]
+		stat.LoadAvg, err = load.Avg()
+		if err != nil {
+			logger.Error(err)
+			if !waitNext() {
+				return
+			}
+			continue
 		}
+
+		stat.Disk, err = analytic.GetDiskStat()
+		if err != nil {
+			logger.Error(err)
+			if !waitNext() {
+				return
+			}
+			continue
+		}
+
+		network, err := analytic.GetNetworkStat()
+		if err != nil {
+			logger.Error(err)
+			if !waitNext() {
+				return
+			}
+			continue
+		}
+
+		stat.Network = *network
+		stat.SampledAt = time.Now().UnixMilli()
 
 		// write
+		_ = ws.SetWriteDeadline(time.Now().Add(wsWriteWait))
 		err = ws.WriteJSON(stat)
-		if helper.IsUnexpectedWebsocketError(err) {
-			logger.Error(err)
+		if err != nil {
+			if helper.IsUnexpectedWebsocketError(err) {
+				logger.Error(err)
+			}
 			break
 		}
-		time.Sleep(800 * time.Microsecond)
+
+		if !waitNext() {
+			return
+		}
 	}
 }
 
@@ -90,7 +143,7 @@ func GetAnalyticInit(c *gin.Context) {
 		logger.Error(err)
 	}
 
-	network, err := net.IOCounters(false)
+	network, err := analytic.GetNetworkStat()
 	if err != nil {
 		logger.Error(err)
 	}
@@ -105,11 +158,11 @@ func GetAnalyticInit(c *gin.Context) {
 		logger.Error(err)
 	}
 
-	var _net net.IOCountersStat
-	if len(network) > 0 {
-		_net = network[0]
+	hostInfo, err := host.Info()
+	if err != nil {
+		logger.Error(err)
+		hostInfo = &host.InfoStat{}
 	}
-	hostInfo, _ := host.Info()
 
 	switch hostInfo.Platform {
 	case "ubuntu":
@@ -119,20 +172,26 @@ func GetAnalyticInit(c *gin.Context) {
 	}
 
 	loadAvg, err := load.Avg()
+	if err != nil {
+		logger.Error(err)
+		loadAvg = &load.AvgStat{}
+	}
 
+	ipAddresses, err := analytic.GetHostIPAddresses()
 	if err != nil {
 		logger.Error(err)
 	}
 
 	c.JSON(http.StatusOK, InitResp{
-		Host: hostInfo,
+		Host:        hostInfo,
+		IPAddresses: ipAddresses,
 		CPU: CPURecords{
 			Info:  cpuInfo,
 			User:  analytic.CpuUserRecord,
 			Total: analytic.CpuTotalRecord,
 		},
 		Network: NetworkRecords{
-			Init:      _net,
+			Init:      *network,
 			BytesRecv: analytic.NetRecvRecord,
 			BytesSent: analytic.NetSentRecord,
 		},
@@ -144,4 +203,55 @@ func GetAnalyticInit(c *gin.Context) {
 		Disk:    diskStat,
 		LoadAvg: loadAvg,
 	})
+}
+
+func GetNode(c *gin.Context) {
+	cpuInfo, err := cpu.Info()
+	if err != nil {
+		logger.Error(err)
+	}
+
+	memory, err := analytic.GetMemoryStat()
+	if err != nil {
+		logger.Error(err)
+	}
+
+	diskStat, err := analytic.GetDiskStat()
+	if err != nil {
+		logger.Error(err)
+	}
+
+	hostInfo, err := host.Info()
+	if err != nil {
+		logger.Error(err)
+		hostInfo = &host.InfoStat{}
+	}
+
+	switch hostInfo.Platform {
+	case "ubuntu":
+		hostInfo.Platform = "Ubuntu"
+	case "centos":
+		hostInfo.Platform = "CentOS"
+	}
+
+	runtimeInfo, err := version.GetRuntimeInfo()
+	if err != nil {
+		logger.Error("Failed to get runtime info:", err)
+		runtimeInfo = version.RuntimeInfo{
+			OS:   fmt.Sprintf("%s %s", hostInfo.Platform, hostInfo.PlatformVersion),
+			Arch: runtime.GOARCH,
+		}
+	}
+
+	ver := version.GetVersionInfo()
+
+	nodeInfo := analytic.NodeInfo{
+		NodeRuntimeInfo: runtimeInfo,
+		Version:         ver.Version,
+		CPUNum:          len(cpuInfo),
+		MemoryTotal:     memory.Total,
+		DiskTotal:       diskStat.Total,
+	}
+
+	c.JSON(http.StatusOK, nodeInfo)
 }

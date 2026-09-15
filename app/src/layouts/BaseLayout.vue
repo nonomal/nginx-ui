@@ -1,32 +1,70 @@
 <script setup lang="ts">
-import _ from 'lodash'
+import { throttle } from 'lodash'
 import { storeToRefs } from 'pinia'
-import FooterLayout from './FooterLayout.vue'
-import SideBar from './SideBar.vue'
-import HeaderLayout from './HeaderLayout.vue'
-import PageHeader from '@/components/PageHeader/PageHeader.vue'
-import { useSettingsStore } from '@/pinia'
 import settings from '@/api/settings'
+import PageHeader from '@/components/PageHeader'
+import { useRouteHashScroll } from '@/composables/useRouteHashScroll'
+import { useSettingsStore, useUserStore } from '@/pinia'
+import { useNodeAvailabilityStore } from '@/pinia/moudule/nodeAvailability'
+import { useProxyAvailabilityStore } from '@/pinia/moudule/proxyAvailability'
+import FooterLayout from './FooterLayout.vue'
+import HeaderLayout from './HeaderLayout.vue'
+import SideBar from './SideBar.vue'
 
-const drawer_visible = ref(false)
-const collapsed = ref(collapse())
+const { handleRouteEnter } = useRouteHashScroll()
 
-addEventListener('resize', _.throttle(() => {
+const drawerVisible = ref(false)
+const collapsed = ref(false)
+const hideLayoutSidebar = ref(false)
+
+function _init() {
   collapsed.value = collapse()
-}, 50))
+  hideLayoutSidebar.value = getClientWidth() < 600
+}
+
+const init = throttle(_init, 50)
+
+addEventListener('resize', init)
 
 function getClientWidth() {
   return document.body.clientWidth
 }
 
 function collapse() {
-  return getClientWidth() < 1280
+  return getClientWidth() < 1080
 }
 
 const { server_name } = storeToRefs(useSettingsStore())
 
 settings.get_server_name().then(r => {
   server_name.value = r.name
+})
+
+// Initialize stores monitoring after user is logged in and layout is mounted
+const proxyAvailabilityStore = useProxyAvailabilityStore()
+const nodeAvailabilityStore = useNodeAvailabilityStore()
+const userStore = useUserStore()
+
+onMounted(() => {
+  // Initialize layout
+  init()
+
+  void userStore.refreshTwoFAStatus()
+
+  // Start monitoring for upstream availability
+  proxyAvailabilityStore.startMonitoring()
+
+  // Start monitoring for node availability
+  nodeAvailabilityStore.startMonitoring()
+})
+
+onUnmounted(() => {
+  // Remove resize listener
+  removeEventListener('resize', init)
+
+  // Stop monitoring when layout is unmounted
+  proxyAvailabilityStore.stopMonitoring()
+  nodeAvailabilityStore.stopMonitoring()
 })
 
 const breadList = ref([])
@@ -38,17 +76,18 @@ provide('breadList', breadList)
   <ALayout class="full-screen-wrapper min-h-screen">
     <div class="drawer-sidebar">
       <ADrawer
-        v-model:open="drawer_visible"
+        v-model:open="drawerVisible"
         :closable="false"
         placement="left"
-        width="256"
-        @close="drawer_visible = false"
+        :size="256"
+        @close="drawerVisible = false"
       >
         <SideBar />
       </ADrawer>
     </div>
 
     <ALayoutSider
+      v-if="!hideLayoutSidebar"
       v-model:collapsed="collapsed"
       collapsible
       :style="{ zIndex: 11 }"
@@ -60,14 +99,14 @@ provide('breadList', breadList)
 
     <ALayout class="main-container">
       <ALayoutHeader :style="{ position: 'sticky', top: '0', zIndex: 10, width: '100%' }">
-        <HeaderLayout @click-un-fold="drawer_visible = true" />
+        <HeaderLayout @click-un-fold="drawerVisible = true" />
       </ALayoutHeader>
 
       <ALayoutContent>
         <PageHeader />
         <div class="router-view">
           <RouterView v-slot="{ Component, route }">
-            <Transition name="slide-fade">
+            <Transition name="slide-fade" @after-enter="handleRouteEnter">
               <component
                 :is="Component"
                 :key="route.path"
@@ -167,7 +206,7 @@ body {
   max-height: 250px;
 }
 
-.header-notice-wrapper .ant-tabs-tabpane-active {
+.header-notice-wrapper .ant-tabs-content-active {
   overflow-y: scroll;
 }
 
@@ -187,21 +226,10 @@ body {
     }
     position: relative;
   }
+
 }
 
 .ant-layout-footer {
   text-align: center;
-}
-
-@media (orientation: landscape) {
-  .full-screen-wrapper {
-    padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
-  }
-}
-
-@media (orientation: portrait) {
-  .full-screen-wrapper {
-    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
-  }
 }
 </style>

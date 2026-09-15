@@ -1,20 +1,19 @@
 <script setup lang="ts">
-import { KeyOutlined } from '@ant-design/icons-vue'
+import type { TwoFAStatus } from '@/api/2fa'
+import { KeyOutlined } from '@antdv-next/icons'
 import { startAuthentication } from '@simplewebauthn/browser'
-import { message } from 'ant-design-vue'
-import OTPInput from '@/components/OTPInput/OTPInput.vue'
-import type { TwoFAStatusResponse } from '@/api/2fa'
 import twoFA from '@/api/2fa'
+import OTPInput from '@/components/OTPInput'
 import { useUserStore } from '@/pinia'
 
 defineProps<{
-  twoFAStatus: TwoFAStatusResponse
+  twoFAStatus: TwoFAStatus
 }>()
 
 const emit = defineEmits(['submitOTP', 'submitSecureSessionID'])
 
 const user = useUserStore()
-const refOTP = ref()
+const refOTP = useTemplateRef('refOTP')
 const useRecoveryCode = ref(false)
 const passcode = ref('')
 const recoveryCode = ref('')
@@ -44,21 +43,17 @@ defineExpose({
 
 async function passkeyAuthenticate() {
   passkeyLoading.value = true
-  try {
-    const begin = await twoFA.begin_start_secure_session_by_passkey()
-    const asseResp = await startAuthentication(begin.options.publicKey)
 
-    const r = await twoFA.finish_start_secure_session_by_passkey({
-      session_id: begin.session_id,
-      options: asseResp,
-    })
+  const begin = await twoFA.begin_start_secure_session_by_passkey()
+  const asseResp = await startAuthentication({ optionsJSON: begin.options.publicKey })
 
-    emit('submitSecureSessionID', r.session_id)
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  catch (e: any) {
-    message.error($gettext(e.message ?? 'Server error'))
-  }
+  const r = await twoFA.finish_start_secure_session_by_passkey({
+    session_id: begin.session_id,
+    options: asseResp,
+  })
+
+  emit('submitSecureSessionID', r.session_id, r.session_ttl)
+
   passkeyLoading.value = false
 }
 
@@ -70,42 +65,38 @@ onMounted(() => {
 
 <template>
   <div>
-    <div v-if="twoFAStatus.otp_status">
-      <div v-if="!useRecoveryCode">
-        <p>{{ $gettext('Please enter the OTP code:') }}</p>
-        <OTPInput
-          ref="refOTP"
-          v-model="passcode"
-          class="justify-center mb-6"
-          @on-complete="onSubmit"
-        />
-      </div>
-      <div
-        v-else
-        class="mt-2 mb-4"
-      >
-        <p>{{ $gettext('Input the recovery code:') }}</p>
-        <AInputGroup compact>
-          <AInput v-model:value="recoveryCode" />
-          <AButton
-            type="primary"
-            @click="onSubmit"
-          >
-            {{ $gettext('Recovery') }}
-          </AButton>
-        </AInputGroup>
-      </div>
+    <AAlert
+      v-if="twoFAStatus.recovery_codes_migration_required"
+      class="mb-4"
+      type="warning"
+      show-icon
+      :title="$gettext('Your account still uses a legacy recovery code. Generate new recovery codes after verification to keep account recovery secure.')"
+    />
 
-      <div class="flex justify-center">
-        <a
-          v-if="!useRecoveryCode"
-          @click="clickUseRecoveryCode"
-        >{{ $gettext('Use recovery code') }}</a>
-        <a
-          v-else
-          @click="clickUseOTP"
-        >{{ $gettext('Use OTP') }}</a>
-      </div>
+    <div
+      v-if="useRecoveryCode"
+      class="mt-2 mb-4"
+    >
+      <p>{{ $gettext('Input the recovery code:') }}</p>
+      <ASpaceCompact block>
+        <AInput v-model:value="recoveryCode" placeholder="xxxxx-xxxxx" />
+        <AButton
+          type="primary"
+          @click="onSubmit"
+        >
+          {{ $gettext('Recovery') }}
+        </AButton>
+      </ASpaceCompact>
+    </div>
+
+    <div v-if="twoFAStatus.otp_status && !useRecoveryCode">
+      <p>{{ $gettext('Please enter the OTP code:') }}</p>
+      <OTPInput
+        ref="refOTP"
+        v-model="passcode"
+        class="justify-center mb-6"
+        @on-complete="onSubmit"
+      />
     </div>
 
     <div
@@ -126,11 +117,16 @@ onMounted(() => {
         {{ $gettext('Authenticate with a passkey') }}
       </AButton>
     </div>
+
+    <div v-if="twoFAStatus.otp_status || twoFAStatus.recovery_codes_generated || twoFAStatus.recovery_codes_migration_required" class="flex justify-center mt-3">
+      <a
+        v-if="!useRecoveryCode"
+        @click="clickUseRecoveryCode"
+      >{{ $gettext('Use recovery code') }}</a>
+      <a
+        v-else-if="twoFAStatus.otp_status"
+        @click="clickUseOTP"
+      >{{ $gettext('Use OTP') }}</a>
+    </div>
   </div>
 </template>
-
-<style scoped lang="less">
-:deep(.ant-input-group.ant-input-group-compact) {
-  display: flex;
-}
-</style>

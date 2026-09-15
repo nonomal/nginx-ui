@@ -1,47 +1,225 @@
 <script setup lang="tsx">
-import { CloudUploadOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue'
-import certColumns from './certColumns'
-import StdTable from '@/components/StdDesign/StdDataDisplay/StdTable.vue'
+import type { DiscoveredCertificatePair } from '@/api/cert'
+import { CloudUploadOutlined, SafetyCertificateOutlined, SearchOutlined } from '@antdv-next/icons'
+import { StdTable } from '@uozi-admin/curd'
+import { Tag } from 'antdv-next'
 import cert from '@/api/cert'
-import WildcardCertificate from '@/views/certificate/WildcardCertificate.vue'
+import { useGlobalStore } from '@/pinia'
+import WildcardCertificate from '../components/DNSIssueCertificate.vue'
+import RemoveCert from '../components/RemoveCert.vue'
+import RetryCert from '../components/RetryCert.vue'
+import certColumns from './certColumns'
 
 const refWildcard = ref()
 const refTable = ref()
+
+const globalStore = useGlobalStore()
+
+const { processingStatus } = storeToRefs(globalStore)
+
+const discoveryVisible = ref(false)
+const discoveryLoading = ref(false)
+const discoveryImporting = ref(false)
+const discoveryCandidates = ref<DiscoveredCertificatePair[]>([])
+const selectedDiscoveryKeys = ref<string[]>([])
+const { message } = App.useApp()
+
+function discoveryRowKey(record: DiscoveredCertificatePair) {
+  return record.fingerprint || `${record.ssl_certificate_path}|${record.ssl_certificate_key_path}`
+}
+
+const discoveryRowSelection = computed(() => ({
+  selectedRowKeys: selectedDiscoveryKeys.value,
+  onChange: (keys: (string | number)[]) => {
+    selectedDiscoveryKeys.value = keys.map(String)
+  },
+}))
+
+const discoveryColumns = computed(() => [
+  {
+    title: $gettext('Name'),
+    dataIndex: 'name',
+  },
+  {
+    title: $gettext('Type'),
+    render: () => (
+      <Tag variant="filled" color="purple">
+        {$gettext('General Certificate')}
+      </Tag>
+    ),
+  },
+  {
+    title: $gettext('SSL Certificate Path'),
+    dataIndex: 'ssl_certificate_path',
+    ellipsis: true,
+  },
+  {
+    title: $gettext('SSL Certificate Key Path'),
+    dataIndex: 'ssl_certificate_key_path',
+    ellipsis: true,
+  },
+  {
+    title: $gettext('Not After'),
+    render: (_value: unknown, record: DiscoveredCertificatePair) => {
+      return record.certificate_info?.not_after ?? '-'
+    },
+  },
+])
+
+async function scanDiscoveredCertificates() {
+  discoveryLoading.value = true
+  try {
+    const result = await cert.discover_new({
+      new_only: true,
+    })
+    discoveryCandidates.value = result.candidates ?? []
+    selectedDiscoveryKeys.value = discoveryCandidates.value.map(discoveryRowKey)
+  }
+  catch (error) {
+    console.error(error)
+    message.error($gettext('Failed to scan certificates'))
+  }
+  finally {
+    discoveryLoading.value = false
+  }
+}
+
+async function openDiscovery() {
+  discoveryVisible.value = true
+  await scanDiscoveredCertificates()
+}
+
+async function importSelectedDiscoveredCerts() {
+  const selected = new Set(selectedDiscoveryKeys.value)
+  const candidates = discoveryCandidates.value.filter(item => selected.has(discoveryRowKey(item)))
+  if (!candidates.length) {
+    message.warning($gettext('Please select at least one certificate'))
+    return
+  }
+
+  discoveryImporting.value = true
+  try {
+    for (const item of candidates) {
+      await cert.import_existing({
+        name: item.name,
+        ssl_certificate_path: item.ssl_certificate_path,
+        ssl_certificate_key_path: item.ssl_certificate_key_path,
+        key_type: item.key_type,
+      })
+    }
+    message.success($gettext('Import successfully'))
+    discoveryVisible.value = false
+    refTable.value?.refresh?.()
+  }
+  catch (error) {
+    console.error(error)
+    message.error($gettext('Failed to import certificate'))
+  }
+  finally {
+    discoveryImporting.value = false
+  }
+}
 </script>
 
 <template>
   <ACard :title="$gettext('Certificates')">
     <template #extra>
-      <AButton
-        type="link"
-        @click="$router.push('/certificates/import')"
-      >
-        <CloudUploadOutlined />
-        {{ $gettext('Import') }}
-      </AButton>
+      <ASpace>
+        <AButton
+          type="link"
+          size="small"
+          :aria-label="$gettext('Discover')"
+          @click="openDiscovery"
+        >
+          <SearchOutlined />
+          <span class="certificate-action-label">{{ $gettext('Discover') }}</span>
+        </AButton>
 
-      <AButton
-        type="link"
-        @click="() => refWildcard.open()"
-      >
-        <SafetyCertificateOutlined />
-        {{ $gettext('Issue wildcard certificate') }}
-      </AButton>
+        <AButton
+          type="link"
+          size="small"
+          :aria-label="$gettext('Import')"
+          @click="$router.push('/certificates/import')"
+        >
+          <CloudUploadOutlined />
+          <span class="certificate-action-label">{{ $gettext('Import') }}</span>
+        </AButton>
+
+        <AButton
+          type="link"
+          size="small"
+          :aria-label="$gettext('Issue certificate')"
+          :disabled="processingStatus.auto_cert_processing"
+          @click="() => refWildcard.open()"
+        >
+          <SafetyCertificateOutlined />
+          <span class="certificate-action-label">{{ $gettext('Issue certificate') }}</span>
+        </AButton>
+      </ASpace>
     </template>
+
     <StdTable
       ref="refTable"
       :api="cert"
       :columns="certColumns"
+      :get-list-api="cert.getList"
       disable-view
-      @click-edit="id => $router.push(`/certificates/${id}`)"
-    />
+      :scroll-x="1000"
+      disable-delete
+      @edit-item="record => $router.push(`/certificates/${record.id}`)"
+    >
+      <template #afterActions="{ record }">
+        <RetryCert
+          v-if="record.status === 'failure'"
+          :cert="record"
+          @retried="() => refTable.refresh()"
+        />
+        <RemoveCert
+          :id="record.id"
+          :certificate="record"
+          :disabled="processingStatus.auto_cert_processing"
+          @removed="() => refTable.refresh()"
+        />
+      </template>
+    </StdTable>
     <WildcardCertificate
       ref="refWildcard"
-      @issued="() => refTable.get_list()"
+      @issued="() => refTable.refresh()"
     />
+    <AModal
+      v-model:open="discoveryVisible"
+      :title="$gettext('Discover Certificates')"
+      :ok-text="$gettext('Import selected')"
+      :confirm-loading="discoveryImporting"
+      :ok-button-props="{ disabled: selectedDiscoveryKeys.length === 0 }"
+      width="900px"
+      @ok="importSelectedDiscoveredCerts"
+    >
+      <div class="mb-4 flex justify-end">
+        <AButton
+          :loading="discoveryLoading"
+          @click="scanDiscoveredCertificates"
+        >
+          {{ $gettext('Scan') }}
+        </AButton>
+      </div>
+      <ATable
+        :columns="discoveryColumns"
+        :data-source="discoveryCandidates"
+        :loading="discoveryLoading"
+        :row-key="discoveryRowKey"
+        :row-selection="discoveryRowSelection"
+        :pagination="false"
+        size="small"
+      />
+    </AModal>
   </ACard>
 </template>
 
 <style lang="less" scoped>
-
+@media (max-width: 600px) {
+  .certificate-action-label {
+    display: none;
+  }
+}
 </style>

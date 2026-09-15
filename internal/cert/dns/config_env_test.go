@@ -4,7 +4,8 @@ import (
 	"github.com/0xJacky/Nginx-UI/internal/cert/config"
 	"github.com/BurntSushi/toml"
 	"log"
-	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -14,19 +15,34 @@ func CheckIfErr(err error) {
 	}
 }
 
+func TestGetProvidersListSortedByName(t *testing.T) {
+	providers := GetProvidersList()
+	if !sort.SliceIsSorted(providers, func(i, j int) bool {
+		leftName := strings.ToLower(providers[i].Name)
+		rightName := strings.ToLower(providers[j].Name)
+		if leftName == rightName {
+			return strings.ToLower(providers[i].Code) < strings.ToLower(providers[j].Code)
+		}
+		return leftName < rightName
+	}) {
+		t.Fatal("providers are not sorted by name")
+	}
+}
+
 func TestConfigEnv(t *testing.T) {
-
-	files, err := config.DistFS.ReadDir(".")
-
+	filenames, err := config.ListConfigs()
 	CheckIfErr(err)
 
-	for _, file := range files {
-		if filepath.Ext(file.Name()) != ".toml" {
+	for _, filename := range filenames {
+		if !strings.HasSuffix(filename, ".toml") {
 			continue
 		}
-		c := Config{}
 
-		_, err := toml.DecodeFS(config.DistFS, file.Name(), &c)
+		data, err := config.GetConfig(filename)
+		CheckIfErr(err)
+
+		c := Config{}
+		err = toml.Unmarshal(data, &c)
 		CheckIfErr(err)
 
 		log.Println(c.Name)
@@ -46,5 +62,4 @@ func TestConfigEnv(t *testing.T) {
 			log.Println(c.Links.GoClient)
 		}
 	}
-
 }

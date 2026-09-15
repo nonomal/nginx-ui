@@ -1,0 +1,301 @@
+<script setup lang="ts">
+import type { SelectProps } from 'antdv-next'
+import type { Node } from '@/api/node'
+import type { ReleaseInfo } from '@/api/upgrade'
+import { cloneDeep } from 'lodash'
+import { marked } from 'marked'
+import upgrade from '@/api/upgrade'
+import { useWebSocket } from '@/lib/websocket'
+
+const emit = defineEmits(['success'])
+
+const route = useRoute()
+const visible = ref(false)
+const nodeIds = ref<number[]>([])
+const nodes = ref<Node[]>([])
+const channel = ref('stable')
+const channelOptions = computed<SelectProps['options']>(() => [
+  {
+    label: $gettext('Stable'),
+    value: 'stable',
+  },
+  {
+    label: $gettext('Pre-release'),
+    value: 'prerelease',
+  },
+  {
+    label: $gettext('Development'),
+    value: 'dev',
+  },
+])
+const nodeNames = computed(() => nodes.value.map(v => v.name).join(', '))
+const loading = ref(false)
+
+const data = ref<ReleaseInfo>({} as ReleaseInfo)
+
+const modalVisible = ref(false)
+const modalClosable = ref(false)
+const getReleaseError = ref(false)
+const progressPercent = ref(0)
+const progressStatus = ref('active') as Ref<'normal' | 'active' | 'success' | 'exception'>
+const showLogContainer = ref(false)
+
+const progressStrokeColor = {
+  from: '#108ee9',
+  to: '#87d068',
+}
+
+const logContainer = useTemplateRef('logContainer')
+function log(msg: string) {
+  const para = document.createElement('p')
+
+  para.appendChild(document.createTextNode($gettext(msg)))
+
+  logContainer.value!.appendChild(para)
+
+  nextTick(() => {
+    logContainer.value!.scroll({ top: logContainer.value!.scrollHeight, left: 0, behavior: 'smooth' })
+  })
+}
+
+const progressPercentComputed = computed(() => {
+  return Number.parseFloat(progressPercent.value.toFixed(1))
+})
+
+function getLatestRelease() {
+  loading.value = true
+  data.value.body = ''
+  upgrade.get_latest_release(channel.value).then(r => {
+    data.value = r
+  }).catch(e => {
+    getReleaseError.value = e?.message
+  }).finally(() => {
+    loading.value = false
+  })
+}
+
+function open(selectedNodeIds: Ref<number[]>, selectedNodes: Ref<Node[]>) {
+  showLogContainer.value = false
+  visible.value = true
+  nodeIds.value = selectedNodeIds.value
+  nodes.value = cloneDeep(selectedNodes.value)
+  getLatestRelease()
+}
+
+watch(channel, getLatestRelease)
+
+defineExpose({
+  open,
+})
+
+const dryRun = computed(() => {
+  return !!route.query.dry_run
+})
+
+async function performUpgrade() {
+  showLogContainer.value = true
+  progressStatus.value = 'active'
+  modalClosable.value = false
+  modalVisible.value = true
+  progressPercent.value = 0
+  logContainer.value!.innerHTML = ''
+
+  log($gettext('Upgrading Nginx UI, please wait...'))
+
+  const nodesNum = nodes.value.length
+
+  for (let i = 0; i < nodesNum; i++) {
+    await new Promise(resolve => {
+      const { ws } = useWebSocket(`/api/upgrade/perform?x_node_id=${nodeIds.value[i]}`, false)
+      const socket = ws.value!
+
+      let last = 0
+
+      socket.onopen = () => {
+        socket.send(JSON.stringify({
+          dry_run: dryRun.value,
+          channel: channel.value,
+        }))
+      }
+      let isFailed = false
+
+      socket.onmessage = async m => {
+        const r = JSON.parse(m.data)
+        if (r.message)
+          log(r.message)
+        switch (r.status) {
+          case 'info':
+            progressPercent.value += (10 / nodesNum)
+            break
+          case 'progress':
+            progressPercent.value += ((r.progress - last) / 2) / nodesNum
+            last = r.progress
+            break
+          case 'error':
+            log('Upgraded successfully')
+            isFailed = true
+            break
+          default:
+            modalClosable.value = true
+            break
+        }
+      }
+
+      socket.onerror = () => {
+        resolve({})
+      }
+
+      socket.onclose = async () => {
+        resolve({})
+
+        progressPercent.value = 100 * ((i + 1) / nodesNum)
+        if (!isFailed)
+          log($gettext('Upgraded Nginx UI on %{node} successfully 🎉', { node: nodes.value[i].name }))
+
+        if (i + 1 === nodesNum) {
+          progressStatus.value = 'success'
+          modalClosable.value = true
+          emit('success')
+        }
+      }
+    })
+  }
+}
+</script>
+
+<template>
+  <AModal
+    v-model:open="visible"
+    :title="$gettext('Batch Upgrade')"
+    :footer="false"
+    :mask="false"
+    width="800px"
+  >
+    <AForm layout="vertical">
+      <AFormItem
+        :label="$gettext('Channel')"
+        class="max-w-40"
+      >
+        <ASelect
+          v-model:value="channel"
+          :options="channelOptions"
+        />
+      </AFormItem>
+    </AForm>
+
+    <ASpin :spinning="loading">
+      <AAlert
+        v-if="getReleaseError"
+        type="error"
+        :title="$gettext('Get release information error')"
+        :description="getReleaseError"
+        banner
+      />
+      <template v-else>
+        <p>{{ $gettext('This will upgrade or reinstall the Nginx UI on %{nodeNames} to %{version}.', { nodeNames, version: data.name }) }}</p>
+
+        <AAlert
+          v-if="dryRun"
+          type="info"
+          class="mb-4"
+          :title="$gettext('Dry run mode enabled')"
+          banner
+        />
+
+        <div
+          v-show="showLogContainer"
+          class="mb-4"
+        >
+          <AProgress
+            :stroke-color="progressStrokeColor"
+            :percent="progressPercentComputed"
+            :status="progressStatus"
+          />
+
+          <div
+            ref="logContainer"
+            class="core-upgrade-log-container"
+          />
+        </div>
+        <div v-show="!showLogContainer && data.body">
+          <h1 class="latest-version">
+            {{ data.name }}
+            <ATag
+              v-if="channel === 'stable'"
+              color="green"
+            >
+              {{ $gettext('Stable') }}
+            </ATag>
+            <ATag
+              v-if="channel === 'prerelease'"
+              color="blue"
+            >
+              {{ $gettext('Pre-release') }}
+            </ATag>
+          </h1>
+
+          <div v-dompurify-html="marked.parse(data.body)" />
+
+          <a
+            v-if="data.html_url"
+            :href="data.html_url"
+            target="_blank"
+          >
+            {{ $gettext('View on GitHub') }}
+          </a>
+        </div>
+
+        <div class="flex justify-end">
+          <AButton
+            v-if="!showLogContainer"
+            type="primary"
+            @click="performUpgrade"
+          >
+            {{ $gettext('Perform') }}
+          </AButton>
+        </div>
+      </template>
+    </ASpin>
+  </AModal>
+</template>
+
+<style lang="less">
+.dark {
+  .core-upgrade-log-container {
+    background-color: rgba(0, 0, 0, 0.84) !important;
+  }
+}
+</style>
+
+<style scoped lang="less">
+:deep(.core-upgrade-log-container) {
+  height: 320px;
+  overflow-y: auto;
+  background-color: #f3f3f3;
+  border-radius: 4px;
+  margin-top: 15px;
+  padding: 10px;
+
+  p {
+    font-size: 12px;
+    line-height: 1.3;
+  }
+}
+
+.latest-version {
+  display: flex;
+  align-items: center;
+
+  span.ant-tag {
+    margin-left: 10px;
+  }
+}
+
+:deep(h1) {
+  font-size: 20px;
+}
+
+:deep(h2) {
+  font-size: 18px;
+}
+</style>

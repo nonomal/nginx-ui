@@ -1,14 +1,17 @@
 package model
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"github.com/0xJacky/Nginx-UI/internal/transport"
-	"github.com/go-acme/lego/v4/lego"
-	"github.com/go-acme/lego/v4/registration"
 	"math/big"
+
+	"github.com/0xJacky/Nginx-UI/internal/transport"
+	"github.com/go-acme/lego/v5/acme"
+	"github.com/go-acme/lego/v5/lego"
+	"github.com/go-acme/lego/v5/registration"
 )
 
 type PrivateKey struct {
@@ -16,26 +19,36 @@ type PrivateKey struct {
 	D    *big.Int
 }
 
+type AcmeRegistration struct {
+	Body acme.Account `json:"body"`
+	URI  string       `json:"uri,omitempty"`
+}
+
 type AcmeUser struct {
 	Model
-	Name              string                `json:"name"`
-	Email             string                `json:"email"`
-	CADir             string                `json:"ca_dir"`
-	Registration      registration.Resource `json:"registration" gorm:"serializer:json"`
-	Key               PrivateKey            `json:"-" gorm:"serializer:json"`
-	Proxy             string                `json:"proxy"`
-	RegisterOnStartup bool                  `json:"register_on_startup"`
+	Name              string           `json:"name"`
+	Email             string           `json:"email"`
+	CADir             string           `json:"ca_dir"`
+	Registration      AcmeRegistration `json:"registration" gorm:"serializer:json"`
+	Key               PrivateKey       `json:"-" gorm:"serializer:json[aes]"`
+	Proxy             string           `json:"proxy"`
+	RegisterOnStartup bool             `json:"register_on_startup"`
+	EABKeyID          string           `json:"eab_key_id"`
+	EABHMACKey        string           `json:"eab_hmac_key"`
 }
 
 func (u *AcmeUser) GetEmail() string {
 	return u.Email
 }
 
-func (u *AcmeUser) GetRegistration() *registration.Resource {
-	return &u.Registration
+func (u *AcmeUser) GetRegistration() *acme.ExtendedAccount {
+	return &acme.ExtendedAccount{
+		Account:  u.Registration.Body,
+		Location: u.Registration.URI,
+	}
 }
 
-func (u *AcmeUser) GetPrivateKey() crypto.PrivateKey {
+func (u *AcmeUser) GetPrivateKey() crypto.Signer {
 	return &ecdsa.PrivateKey{
 		PublicKey: ecdsa.PublicKey{
 			Curve: elliptic.P256(),
@@ -59,7 +72,7 @@ func (u *AcmeUser) Register() error {
 
 	config := lego.NewConfig(u)
 	config.CADirURL = u.CADir
-	u.Registration = registration.Resource{}
+	u.Registration = AcmeRegistration{}
 
 	// Skip TLS check
 	if config.HTTPClient != nil {
@@ -77,12 +90,30 @@ func (u *AcmeUser) Register() error {
 	}
 
 	// New users will need to register
-	reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
+	var reg *acme.ExtendedAccount
+	ctx := context.Background()
+
+	// Check if EAB credentials are provided
+	if u.EABKeyID != "" && u.EABHMACKey != "" {
+		// Register with External Account Binding
+		reg, err = client.Registration.RegisterWithExternalAccountBinding(ctx, registration.RegisterEABOptions{
+			TermsOfServiceAgreed: true,
+			Kid:                  u.EABKeyID,
+			HmacEncoded:          u.EABHMACKey,
+		})
+	} else {
+		// Register without EAB
+		reg, err = client.Registration.Register(ctx, registration.RegisterOptions{TermsOfServiceAgreed: true})
+	}
+
 	if err != nil {
 		return err
 	}
 
-	u.Registration = *reg
+	u.Registration = AcmeRegistration{
+		Body: reg.Account,
+		URI:  reg.Location,
+	}
 
 	return nil
 }

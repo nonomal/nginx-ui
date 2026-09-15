@@ -1,16 +1,21 @@
-import type { RegistrationResponseJSON } from '@simplewebauthn/types'
-import http from '@/lib/http'
+import type { RegistrationResponseJSON } from '@simplewebauthn/browser'
 import type { ModelBase } from '@/api/curd'
+import { http } from '@uozi-admin/request'
 
 export interface Passkey extends ModelBase {
   name: string
   user_id: string
   raw_id: string
+  last_used_at: number
 }
 
 const passkey = {
-  begin_registration() {
-    return http.get('/begin_passkey_register')
+  begin_registration(password: string) {
+    return http.get('/begin_passkey_register', {
+      headers: {
+        'X-Current-Password': password,
+      },
+    })
   },
   finish_registration(attestationResponse: RegistrationResponseJSON, passkeyName: string) {
     return http.post('/finish_passkey_register', attestationResponse, {
@@ -19,7 +24,7 @@ const passkey = {
       },
     })
   },
-  get_list() {
+  getList() {
     return http.get('/passkeys')
   },
   update(passkeyId: number, data: Passkey) {

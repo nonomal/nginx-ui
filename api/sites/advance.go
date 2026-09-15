@@ -1,11 +1,13 @@
 package sites
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
-	"github.com/0xJacky/Nginx-UI/internal/nginx"
+	"net/http"
+
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/internal/site"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/gin-gonic/gin"
-	"net/http"
+	"github.com/uozi-tech/cosy"
 )
 
 func DomainEditByAdvancedMode(c *gin.Context) {
@@ -13,25 +15,29 @@ func DomainEditByAdvancedMode(c *gin.Context) {
 		Advanced bool `json:"advanced"`
 	}
 
-	if !api.BindAndValid(c, &json) {
+	if !cosy.BindAndValid(c, &json) {
 		return
 	}
 
-	name := c.Param("name")
-	path := nginx.GetConfPath("sites-available", name)
+	name := helper.UnescapeURL(c.Param("name"))
+	path, err := site.ResolveAvailablePath(name)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
 
 	s := query.Site
 
-	_, err := s.Where(s.Path.Eq(path)).FirstOrCreate()
+	_, err = s.Where(s.Path.Eq(path)).FirstOrCreate()
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
 	_, err = s.Where(s.Path.Eq(path)).Update(s.Advanced, json.Advanced)
 
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 

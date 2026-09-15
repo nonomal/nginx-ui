@@ -1,17 +1,16 @@
+import type { CustomRenderArgs, StdTableColumn } from '@uozi-admin/curd'
+import type { JSXElements } from '@/types'
+import { datetimeRender } from '@uozi-admin/curd'
+import { Badge, Tag, Tooltip } from 'antdv-next'
 import dayjs from 'dayjs'
-import { Badge, Tag } from 'ant-design-vue'
-import type { Column, JSXElements } from '@/components/StdDesign/types'
-import type { customRender } from '@/components/StdDesign/StdDataDisplay/StdTableTransformer'
-import { datetime, mask } from '@/components/StdDesign/StdDataDisplay/StdTableTransformer'
-import { input } from '@/components/StdDesign/StdDataEntry'
-import { PrivateKeyTypeMask } from '@/constants'
+import { AutoCertState, formatPrivateKeyType } from '@/constants'
 
-const columns: Column[] = [{
+const columns: StdTableColumn[] = [{
   title: () => $gettext('Name'),
   dataIndex: 'name',
-  sortable: true,
-  pithy: true,
-  customRender: (args: customRender) => {
+  sorter: true,
+  pure: true,
+  customRender: (args: CustomRenderArgs) => {
     const { text, record } = args
     if (!text)
       return h('div', record.domain)
@@ -19,75 +18,125 @@ const columns: Column[] = [{
     return h('div', text)
   },
   search: {
-    type: input,
+    type: 'input',
   },
 }, {
   title: () => $gettext('Type'),
   dataIndex: 'auto_cert',
-  customRender: (args: customRender) => {
+  customRender: ({ text }: CustomRenderArgs) => {
     const template: JSXElements = []
-    const { text } = args
     const sync = $gettext('Sync Certificate')
     const managed = $gettext('Managed Certificate')
     const general = $gettext('General Certificate')
-    if (text === true || text === 1) {
-      template.push(<Tag bordered={false} color="processing">
-        { managed }
-        </Tag>)
+    const selfSigned = $gettext('Self-signed Certificate')
+    if (text === true || text === AutoCertState.Enable) {
+      template.push(
+        <Tag variant="filled" color="processing">
+          {managed}
+        </Tag>,
+      )
     }
-    else if (text === 2) {
-      template.push(<Tag bordered={false} color="success">
-        { sync }
-        </Tag>)
+    else if (text === AutoCertState.Sync) {
+      template.push(
+        <Tag variant="filled" color="success">
+          {sync}
+        </Tag>,
+      )
+    }
+    else if (text === AutoCertState.SelfSigned) {
+      template.push(
+        <Tag variant="filled" color="cyan">
+          {selfSigned}
+        </Tag>,
+      )
     }
     else {
-      template.push(<Tag bordered={false} color="purple">{
-          general }
-        </Tag>)
+      template.push(
+        <Tag variant="filled" color="purple">
+          {general}
+        </Tag>,
+      )
     }
-
     return h('div', template)
   },
-  sortable: true,
-  pithy: true,
+  sorter: true,
+  pure: true,
 }, {
   title: () => $gettext('Key Type'),
   dataIndex: 'key_type',
-  customRender: mask(PrivateKeyTypeMask),
-  sortable: true,
-  pithy: true,
+  customRender: ({ text }: CustomRenderArgs) => formatPrivateKeyType(text),
+  sorter: true,
+  pure: true,
 }, {
   title: () => $gettext('Status'),
-  dataIndex: 'certificate_info',
-  pithy: true,
-  customRender: (args: customRender) => {
-    const template: JSXElements = []
-
-    const text = args.text?.not_before
-      && args.text?.not_after
-      && !dayjs().isBefore(args.text?.not_before)
-      && !dayjs().isAfter(args.text?.not_after)
-
-    if (text) {
-      template.push(<Badge status="success"/>)
-      template.push($gettext('Valid'))
+  dataIndex: 'status',
+  pure: true,
+  customRender: (args: CustomRenderArgs) => {
+    const { record } = args
+    if (record.status === 'pending') {
+      return h('div', [
+        h(Badge, { status: 'processing' }),
+        h('span', $gettext('Issuing...')),
+      ])
     }
-    else {
-      template.push(<Badge status="error"/>)
-      template.push($gettext('Expired'))
+    if (record.status === 'failure') {
+      const errorMsg = record.last_error || $gettext('Issuance failed')
+      return h(Tooltip, { title: errorMsg }, () =>
+        h('div', [
+          h(Badge, { status: 'error' }),
+          h('span', $gettext('Failed')),
+        ]))
     }
-
-    return h('div', template)
+    const deployment = record.deployment_status
+    if (deployment?.state === 'legacy_drift' || deployment?.state === 'mismatch') {
+      const label = deployment.state === 'legacy_drift'
+        ? $gettext('Automatic migration pending')
+        : $gettext('Configuration mismatch')
+      const configuredPaths = deployment.configured_certificate_paths?.join(', ') || '-'
+      const managedPath = deployment.managed_certificate_path || '-'
+      const title = $gettext('Configured path: %{configured}; managed path: %{managed}', {
+        configured: configuredPaths,
+        managed: managedPath,
+      })
+      return h(Tooltip, { title }, () =>
+        h('div', [
+          h(Badge, { status: 'warning' }),
+          h('span', label),
+        ]))
+    }
+    if (deployment?.state === 'unreadable' && deployment.error) {
+      return h(Tooltip, { title: deployment.error }, () =>
+        h('div', [
+          h(Badge, { status: 'warning' }),
+          h('span', $gettext('Unable to verify deployment')),
+        ]))
+    }
+    const info = record.certificate_info
+    const valid = info?.not_before
+      && info?.not_after
+      && !dayjs().isBefore(info.not_before)
+      && !dayjs().isAfter(info.not_after)
+    if (valid) {
+      return h('div', [
+        h(Badge, { status: 'success' }),
+        h('span', $gettext('Valid')),
+      ])
+    }
+    return h('div', [
+      h(Badge, { status: 'error' }),
+      h('span', $gettext('Expired')),
+    ])
   },
 }, {
   title: () => $gettext('Not After'),
   dataIndex: ['certificate_info', 'not_after'],
-  customRender: datetime,
-  sortable: true,
-  pithy: true,
+  customRender: datetimeRender,
+  sorter: true,
+  pure: true,
 }, {
-  title: () => $gettext('Action'),
-  dataIndex: 'action',
+  title: () => $gettext('Actions'),
+  dataIndex: 'actions',
+  fixed: 'right',
 }]
 
 export default columns

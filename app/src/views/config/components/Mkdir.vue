@@ -1,10 +1,9 @@
 <script setup lang="ts">
-
-import { message } from 'ant-design-vue'
 import config from '@/api/config'
 import use2FAModal from '@/components/TwoFA/use2FAModal'
 
 const emit = defineEmits(['created'])
+const { message } = useGlobalApp()
 const visible = ref(false)
 
 const data = ref({
@@ -12,7 +11,9 @@ const data = ref({
   name: '',
 })
 
+// eslint-disable-next-line vue/require-typed-ref
 const refForm = ref()
+
 function open(basePath: string) {
   visible.value = true
   data.value.name = ''
@@ -33,8 +34,6 @@ function ok() {
 
         message.success($gettext('Created successfully'))
         emit('created')
-      }).catch(e => {
-        message.error(`${$gettext('Server error')} ${e?.message}`)
       })
     })
   })

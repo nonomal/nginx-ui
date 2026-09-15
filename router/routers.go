@@ -1,13 +1,27 @@
 package router
 
 import (
+	"net/http"
+
 	"github.com/0xJacky/Nginx-UI/api/analytic"
+	"github.com/0xJacky/Nginx-UI/api/audit"
+	"github.com/0xJacky/Nginx-UI/api/backup"
 	"github.com/0xJacky/Nginx-UI/api/certificate"
 	"github.com/0xJacky/Nginx-UI/api/cluster"
 	"github.com/0xJacky/Nginx-UI/api/config"
+	"github.com/0xJacky/Nginx-UI/api/crypto"
+	dnsapi "github.com/0xJacky/Nginx-UI/api/dns"
+	"github.com/0xJacky/Nginx-UI/api/event"
+	"github.com/0xJacky/Nginx-UI/api/external_notify"
+	"github.com/0xJacky/Nginx-UI/api/geolite"
+	"github.com/0xJacky/Nginx-UI/api/host"
+	"github.com/0xJacky/Nginx-UI/api/license"
+	"github.com/0xJacky/Nginx-UI/api/llm"
 	"github.com/0xJacky/Nginx-UI/api/nginx"
+	nginxLog "github.com/0xJacky/Nginx-UI/api/nginx_log"
 	"github.com/0xJacky/Nginx-UI/api/notification"
-	"github.com/0xJacky/Nginx-UI/api/openai"
+	"github.com/0xJacky/Nginx-UI/api/pages"
+	"github.com/0xJacky/Nginx-UI/api/public"
 	"github.com/0xJacky/Nginx-UI/api/settings"
 	"github.com/0xJacky/Nginx-UI/api/sites"
 	"github.com/0xJacky/Nginx-UI/api/streams"
@@ -17,20 +31,30 @@ import (
 	"github.com/0xJacky/Nginx-UI/api/upstream"
 	"github.com/0xJacky/Nginx-UI/api/user"
 	"github.com/0xJacky/Nginx-UI/internal/middleware"
-	"github.com/gin-contrib/static"
+	"github.com/0xJacky/Nginx-UI/mcp"
 	"github.com/gin-gonic/gin"
-	"net/http"
+	"github.com/uozi-tech/cosy"
+	"github.com/uozi-tech/cosy/debug"
+	"github.com/uozi-tech/cosy/logger"
 )
 
-func InitRouter() *gin.Engine {
-	r := gin.New()
-	r.Use(
-		gin.Logger(),
-		middleware.Recovery(),
-		middleware.CacheJs(),
-		middleware.IPWhiteList(),
-		static.Serve("/", middleware.MustFs("")),
-	)
+func InitRouter() {
+	r := cosy.GetEngine()
+
+	r.GET("/healthz", public.Healthz)
+
+	r.Use(audit.LoggingMiddleware())
+
+	if err := configureTrustedProxies(r); err != nil {
+		logger.Fatalf("Configure trusted proxies: %v", err)
+	}
+
+	// Add CORS middleware to allow all origins
+	r.Use(middleware.CORS())
+
+	initEmbedRoute(r)
+
+	pages.InitRouter(r)
 
 	r.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -38,15 +62,46 @@ func InitRouter() *gin.Engine {
 		})
 	})
 
-	root := r.Group("/api")
+	mcp.InitRouter(r)
+
+	root := r.Group("/api", middleware.IPWhiteList())
 	{
-		system.InitPublicRouter(root)
+		public.InitRouter(root)
+		crypto.InitPublicRouter(root)
 		user.InitAuthRouter(root)
+		license.InitRouter(root)
+
+		system.InitPublicRouter(root)
+		backup.InitRouter(root)
+
+		setup := root.Group("/setup", middleware.SetupAuthRequired())
+		{
+			system.InitSetupRouter(setup)
+			backup.InitSetupRouter(setup)
+		}
+
+		// Local-only routes (no proxy) - authorization required. Account and
+		// secure-session state belong to the controller that authenticated the
+		// browser, even while the UI is managing a selected remote node.
+		local := root.Group("/", middleware.AuthRequired())
+		{
+			llm.InitLocalRouter(local)
+			user.InitTokenRouter(local)
+			user.InitUserRouter(local)
+		}
+
+		// Local-only WebSocket routes (no proxy). WebSocket handshakes cannot
+		// carry an Authorization header, so they must use AuthRequiredWS, which
+		// also accepts the token from the query string.
+		localWs := root.Group("/", middleware.AuthRequiredWS())
+		{
+			llm.InitLocalWebSocketRouter(localWs)
+		}
 
 		// Authorization required and not websocket request
 		g := root.Group("/", middleware.AuthRequired(), middleware.Proxy())
 		{
-			user.InitUserRouter(g)
+			debug.InitRouter(g)
 			analytic.InitRouter(g)
 			user.InitManageUserRouter(g)
 			nginx.InitRouter(g)
@@ -57,27 +112,38 @@ func InitRouter() *gin.Engine {
 			certificate.InitCertificateRouter(g)
 			certificate.InitDNSCredentialRouter(g)
 			certificate.InitAcmeUserRouter(g)
+			dnsapi.InitRouter(g)
 			system.InitPrivateRouter(g)
 			settings.InitRouter(g)
-			openai.InitRouter(g)
+			llm.InitRouter(g)
+			mcp.InitManagementRouter(g)
 			cluster.InitRouter(g)
+			host.InitRouter(g)
 			notification.InitRouter(g)
+			external_notify.InitRouter(g)
+			backup.InitAutoBackupRouter(g)
+			nginxLog.InitRouter(g)
+			upstream.InitHTTPRouter(g)
+			g.GET("/geolite/status", geolite.GetStatus)
 		}
 
-		// Authorization required and websocket request
-		w := root.Group("/", middleware.AuthRequired(), middleware.ProxyWs())
+		// Authorization required and websocket request (no cookie fallback to prevent CSWSH)
+		w := root.Group("/", middleware.AuthRequiredWS(), middleware.ProxyWs())
 		{
 			analytic.InitWebSocketRouter(w)
 			certificate.InitCertificateWebSocketRouter(w)
-			o := w.Group("", middleware.RequireSecureSession())
+			event.InitRouter(w)
+			o := w.Group("", middleware.RequireInteractiveUser(), middleware.RequireSecureSession())
 			{
 				terminal.InitRouter(o)
 			}
-			nginx.InitNginxLogRouter(w)
-			upstream.InitRouter(w)
+			nginxLog.InitWebSocketRouter(w)
+			sites.InitWebSocketRouter(w)
+			upstream.InitWebSocketRouter(w)
 			system.InitWebSocketRouter(w)
+			nginx.InitWebSocketRouter(w)
+			cluster.InitWebSocketRouter(w)
+			w.GET("/geolite/download", geolite.DownloadGeoLiteDB)
 		}
 	}
-
-	return r
 }

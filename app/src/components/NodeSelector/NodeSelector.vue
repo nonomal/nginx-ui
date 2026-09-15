@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import type { Ref } from 'vue'
-import type { Environment } from '@/api/environment'
-import environment from '@/api/environment'
+import type { AnalyticNode } from '@/api/node'
+import { useNodeAvailabilityStore } from '@/pinia/moudule/nodeAvailability'
 
 const props = defineProps<{
   hiddenLocal?: boolean
@@ -10,24 +9,17 @@ const props = defineProps<{
 const target = defineModel<number[]>('target')
 const map = defineModel<Record<number, string>>('map')
 
-const data = ref([]) as Ref<Environment[]>
-const data_map = ref({}) as Ref<Record<number, Environment>>
+const nodeStore = useNodeAvailabilityStore()
 
-onMounted(async () => {
-  let hasMore = true
-  let page = 1
-  while (hasMore) {
-    await environment.get_list({ page, enabled: true }).then(r => {
-      data.value.push(...r.data)
-      r.data?.forEach(node => {
-        data_map.value[node.id] = node
-      })
-      hasMore = r.data.length === r.pagination.per_page
-      page++
-    }).catch(() => {
-      hasMore = false
-    })
-  }
+// Computed data based on store
+const data = computed(() => nodeStore.getAllNodes())
+const data_map = computed(() => {
+  const nodes = nodeStore.getAllNodes()
+  return nodes.reduce((acc, node) => {
+    if (node.id)
+      acc[node.id] = node
+    return acc
+  }, {} as Record<number, Partial<AnalyticNode>>)
 })
 
 const value = computed({
@@ -35,7 +27,6 @@ const value = computed({
     return target.value
   },
   set(v: number[]) {
-    console.log(v)
     if (typeof map.value === 'object') {
       const _map = {}
 
@@ -70,7 +61,7 @@ const noData = computed(() => {
         <ACheckbox :value="0">
           {{ $gettext('Local') }}
         </ACheckbox>
-        <ATag color="blue">
+        <ATag color="green">
           {{ $gettext('Online') }}
         </ATag>
       </ACol>
@@ -83,7 +74,7 @@ const noData = computed(() => {
         </ACheckbox>
         <ATag
           v-if="node.status"
-          color="blue"
+          color="green"
         >
           {{ $gettext('Online') }}
         </ATag>

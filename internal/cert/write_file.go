@@ -1,11 +1,13 @@
 package cert
 
 import (
-	"fmt"
-	"github.com/0xJacky/Nginx-UI/internal/helper"
-	"github.com/0xJacky/Nginx-UI/internal/nginx"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/internal/nginx"
 )
 
 type Content struct {
@@ -22,43 +24,230 @@ func (c *Content) WriteFile() (err error) {
 
 	nginxConfPath := nginx.GetConfPath()
 	if !helper.IsUnderDirectory(c.SSLCertificatePath, nginxConfPath) {
-		return fmt.Errorf("ssl_certificate_path: %s is not under the nginx conf path: %s",
-			c.SSLCertificatePath, nginxConfPath)
+		return e.NewWithParams(50006, ErrPathIsNotUnderTheNginxConfDir.Error(), c.SSLCertificatePath, nginxConfPath)
 	}
 
 	if !helper.IsUnderDirectory(c.SSLCertificateKeyPath, nginxConfPath) {
-		return fmt.Errorf("ssl_certificate_key_path: %s is not under the nginx conf path: %s",
-			c.SSLCertificateKeyPath, nginxConfPath)
+		return e.NewWithParams(50006, ErrPathIsNotUnderTheNginxConfDir.Error(), c.SSLCertificateKeyPath, nginxConfPath)
 	}
 
-	// MkdirAll creates a directory named path, along with any necessary parents,
-	// and returns nil, or else returns an error.
-	// The permission bits perm (before umask) are used for all directories that MkdirAll creates.
-	// If path is already a directory, MkdirAll does nothing and returns nil.
-
-	err = os.MkdirAll(filepath.Dir(c.SSLCertificatePath), 0644)
+	// Certificates are loaded by nginx, so they must be written to the nginx
+	// target filesystem: the local disk in local/container mode, the remote host
+	// over SFTP in host_via_ssh + sftp mode.
+	err = nginx.MkdirAll(filepath.Dir(c.SSLCertificatePath), 0755)
 	if err != nil {
 		return
 	}
 
-	err = os.MkdirAll(filepath.Dir(c.SSLCertificateKeyPath), 0644)
+	err = nginx.MkdirAll(filepath.Dir(c.SSLCertificateKeyPath), 0755)
 	if err != nil {
 		return
 	}
+
+	if err = ensureWritableFileTarget(c.SSLCertificatePath); err != nil {
+		return
+	}
+	if err = ensureWritableFileTarget(c.SSLCertificateKeyPath); err != nil {
+		return
+	}
+	privateKeyOptions, err := privateKeyWriteOptions(c.SSLCertificateKeyPath)
+	if err != nil {
+		return err
+	}
+
+	tmpFiles := make(map[string]string, 2)
+	defer func() {
+		for _, tmpPath := range tmpFiles {
+			_ = nginx.Remove(tmpPath)
+		}
+	}()
 
 	if c.SSLCertificate != "" {
-		err = os.WriteFile(c.SSLCertificatePath, []byte(c.SSLCertificate), 0644)
-		if err != nil {
+		if tmpFiles[c.SSLCertificatePath], err = writeTempFileNextTo(c.SSLCertificatePath, []byte(c.SSLCertificate), 0644); err != nil {
 			return
 		}
 	}
 
 	if c.SSLCertificateKey != "" {
-		err = os.WriteFile(c.SSLCertificateKeyPath, []byte(c.SSLCertificateKey), 0644)
-		if err != nil {
+		if tmpFiles[c.SSLCertificateKeyPath], err = writeTempFileNextToWithOptions(c.SSLCertificateKeyPath,
+			[]byte(c.SSLCertificateKey), privateKeyOptions); err != nil {
 			return
 		}
 	}
 
+	for targetPath, tmpPath := range tmpFiles {
+		if err = replaceFile(tmpPath, targetPath); err != nil {
+			return
+		}
+		delete(tmpFiles, targetPath)
+	}
+
 	return
+}
+
+// writeFileWithMode atomically replaces path with content and guarantees the
+// resulting file carries perm. A plain WriteFile keeps the mode of an already
+// existing file, so staging into a fresh temp file next to the target is what
+// repairs keys that earlier versions created with looser permissions. The
+// content is never visible under a looser mode because the temp file is
+// created exclusively, forced to 0600 before any byte is written, and only
+// given its final mode before the rename. Every step goes through the nginx
+// target filesystem so the files land where nginx will load them.
+func writeFileWithMode(path string, content []byte, perm os.FileMode) error {
+	if err := ensureWritableFileTarget(path); err != nil {
+		return err
+	}
+
+	tmpPath, err := writeTempFileNextTo(path, content, perm)
+	if err != nil {
+		return err
+	}
+
+	if err = replaceFile(tmpPath, path); err != nil {
+		_ = nginx.Remove(tmpPath)
+		return err
+	}
+
+	return nil
+}
+
+type fileWriteOptions struct {
+	perm      os.FileMode
+	ownership *nginx.FileOwnership
+}
+
+// privateKeyWriteOptions keeps an administrator's explicit group-readable
+// setup across certificate renewal. New keys and keys with any other mode are
+// written owner-only, so legacy world-readable permissions are still repaired.
+func privateKeyWriteOptions(path string) (fileWriteOptions, error) {
+	options := fileWriteOptions{perm: 0600}
+	info, err := nginx.Stat(path)
+	if os.IsNotExist(err) {
+		return options, nil
+	}
+	if err != nil {
+		return options, err
+	}
+	if info.IsDir() || info.Mode().Perm() != 0640 {
+		return options, nil
+	}
+
+	ownership, ok := nginx.Ownership(info)
+	if !ok {
+		return options, nil
+	}
+	options.perm = 0640
+	options.ownership = &ownership
+	return options, nil
+}
+
+func writePrivateKey(path string, content []byte) error {
+	options, err := privateKeyWriteOptions(path)
+	if err != nil {
+		return err
+	}
+
+	if err = ensureWritableFileTarget(path); err != nil {
+		return err
+	}
+
+	tmpPath, err := writeTempFileNextToWithOptions(path, content, options)
+	if err != nil {
+		return err
+	}
+	if err = replaceFile(tmpPath, path); err != nil {
+		_ = nginx.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func ensureWritableFileTarget(path string) error {
+	info, err := nginx.Stat(path)
+	if err == nil && info.IsDir() {
+		return &os.PathError{Op: "write", Path: path, Err: os.ErrInvalid}
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// tempFileCreateAttempts bounds the retries when a randomly named temp file
+// already exists, mirroring os.CreateTemp.
+const tempFileCreateAttempts = 10
+
+// writeTempFileNextTo stages content into a fresh, exclusively created temp
+// file in the directory of path on the nginx target filesystem and returns
+// the temp file path. The file is forced to 0600 before any content is written
+// because the SFTP backend ignores the mode passed to OpenFile. Its final
+// ownership and mode are applied only after the complete content is closed.
+func writeTempFileNextTo(path string, content []byte, perm os.FileMode) (string, error) {
+	return writeTempFileNextToWithOptions(path, content, fileWriteOptions{perm: perm})
+}
+
+func writeTempFileNextToWithOptions(path string, content []byte, options fileWriteOptions) (string, error) {
+	dir := filepath.Dir(path)
+	prefix := "." + filepath.Base(path) + "."
+
+	var lastErr error
+	for i := 0; i < tempFileCreateAttempts; i++ {
+		var random [8]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", err
+		}
+		tmpPath := filepath.Join(dir, prefix+hex.EncodeToString(random[:])+".tmp")
+
+		tmpFile, err := nginx.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			if os.IsExist(err) {
+				lastErr = err
+				continue
+			}
+			return "", err
+		}
+
+		if err = nginx.Chmod(tmpPath, 0600); err != nil {
+			_ = tmpFile.Close()
+			_ = nginx.Remove(tmpPath)
+			return "", err
+		}
+		if _, err = tmpFile.Write(content); err != nil {
+			_ = tmpFile.Close()
+			_ = nginx.Remove(tmpPath)
+			return "", err
+		}
+		if err = tmpFile.Close(); err != nil {
+			_ = nginx.Remove(tmpPath)
+			return "", err
+		}
+		if options.ownership != nil {
+			if err = nginx.Chown(tmpPath, options.ownership.UID, options.ownership.GID); err != nil {
+				_ = nginx.Remove(tmpPath)
+				return "", err
+			}
+		}
+		if err = nginx.Chmod(tmpPath, options.perm); err != nil {
+			_ = nginx.Remove(tmpPath)
+			return "", err
+		}
+
+		return tmpPath, nil
+	}
+
+	return "", &os.PathError{Op: "createtemp", Path: filepath.Join(dir, prefix+"*.tmp"), Err: lastErr}
+}
+
+// replaceFile moves tmpPath over targetPath. A local rename replaces the
+// target atomically; SFTP servers commonly refuse to rename onto an existing
+// file, so the target is removed and the rename retried in that case.
+func replaceFile(tmpPath, targetPath string) error {
+	if err := nginx.Rename(tmpPath, targetPath); err == nil {
+		return nil
+	}
+
+	if err := nginx.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nginx.Rename(tmpPath, targetPath)
 }

@@ -1,17 +1,29 @@
 package user
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"github.com/0xJacky/Nginx-UI/api"
+	"net/http"
+	"net/url"
+	"os"
+
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
 	"github.com/0xJacky/Nginx-UI/internal/user"
 	"github.com/0xJacky/Nginx-UI/settings"
 	"github.com/casdoor/casdoor-go-sdk/casdoorsdk"
 	"github.com/gin-gonic/gin"
-	"github.com/pkg/errors"
+	"github.com/uozi-tech/cosy"
+	cSettings "github.com/uozi-tech/cosy/settings"
 	"gorm.io/gorm"
-	"net/http"
-	"net/url"
-	"os"
+)
+
+const (
+	casdoorStateCookie = "casdoor_state"
+	casdoorStateMaxAge = 300
 )
 
 type CasdoorLoginUser struct {
@@ -22,8 +34,12 @@ type CasdoorLoginUser struct {
 func CasdoorCallback(c *gin.Context) {
 	var loginUser CasdoorLoginUser
 
-	ok := api.BindAndValid(c, &loginUser)
+	ok := cosy.BindAndValid(c, &loginUser)
 	if !ok {
+		return
+	}
+
+	if !validateCasdoorState(c, loginUser.State) {
 		return
 	}
 
@@ -43,7 +59,7 @@ func CasdoorCallback(c *gin.Context) {
 
 	certBytes, err := os.ReadFile(certificatePath)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
@@ -51,13 +67,13 @@ func CasdoorCallback(c *gin.Context) {
 
 	token, err := casdoorsdk.GetOAuthToken(loginUser.Code, loginUser.State)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
 	claims, err := casdoorsdk.ParseJwtToken(token.AccessToken)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
@@ -68,35 +84,83 @@ func CasdoorCallback(c *gin.Context) {
 				"message": "User not exist",
 			})
 		} else {
-			api.ErrHandler(c, err)
+			cosy.ErrHandler(c, err)
 		}
 		return
 	}
 
-	userToken, err := user.GenerateJWT(u)
+	userToken, err := user.IssueLoginToken(u, user.LoginProofExternal)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
+	middleware.EnsureSecureSessionCookie(c)
+
 	c.JSON(http.StatusOK, LoginResponse{
-		Message: "ok",
-		Token:   userToken,
+		Message:            "ok",
+		AccessTokenPayload: userToken,
 	})
 }
 
+func validateCasdoorState(c *gin.Context, loginState string) bool {
+	state, err := c.Cookie(casdoorStateCookie)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "State cookie not found",
+		})
+		return false
+	}
+
+	if !constantTimeStateEqual(state, loginState) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"message": "State mismatch",
+		})
+		return false
+	}
+
+	setCasdoorStateCookie(c, "", -1)
+	return true
+}
+
+func constantTimeStateEqual(expected, actual string) bool {
+	expectedHash := sha256.Sum256([]byte(expected))
+	actualHash := sha256.Sum256([]byte(actual))
+	return subtle.ConstantTimeCompare(expectedHash[:], actualHash[:]) == 1
+}
+
+func setCasdoorStateCookie(c *gin.Context, value string, maxAge int) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(casdoorStateCookie, value, maxAge, "/", "", cSettings.ServerSettings.EnableHTTPS, true)
+}
+
 func GetCasdoorUri(c *gin.Context) {
-	endpoint := settings.CasdoorSettings.Endpoint
 	clientId := settings.CasdoorSettings.ClientId
 	redirectUri := settings.CasdoorSettings.RedirectUri
-	state := settings.CasdoorSettings.Application
+	application := settings.CasdoorSettings.Application
 
-	if endpoint == "" || clientId == "" || redirectUri == "" || state == "" {
+	endpoint := settings.CasdoorSettings.Endpoint
+	// feature request #603
+	if settings.CasdoorSettings.ExternalUrl != "" {
+		endpoint = settings.CasdoorSettings.ExternalUrl
+	}
+
+	if endpoint == "" || clientId == "" || redirectUri == "" || application == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"uri": "",
 		})
 		return
 	}
+
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+
+	state := "nginx-ui-casdoor_" + hex.EncodeToString(b)
+	setCasdoorStateCookie(c, state, casdoorStateMaxAge)
 
 	encodedRedirectUri := url.QueryEscape(redirectUri)
 

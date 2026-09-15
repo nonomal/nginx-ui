@@ -1,20 +1,45 @@
 <script setup lang="ts">
+import type { SelectProps } from 'antdv-next'
 import type { Ref } from 'vue'
+import type { ReleaseInfo } from '@/api/upgrade'
 import dayjs from 'dayjs'
-import { marked } from 'marked'
 
-import { message } from 'ant-design-vue'
-import { useRoute } from 'vue-router'
-import websocket from '@/lib/websocket'
-import version from '@/version.json'
-import type { RuntimeInfo } from '@/api/upgrade'
+import { marked } from 'marked'
 import upgrade from '@/api/upgrade'
+import { useWebSocket } from '@/lib/websocket'
+import version from '@/version.json'
 
 const route = useRoute()
-const data = ref({}) as Ref<RuntimeInfo>
+const data = ref<ReleaseInfo>({} as ReleaseInfo)
 const lastCheck = ref('')
 const loading = ref(false)
-const channel = ref('stable')
+const availableChannels = ['stable', 'prerelease', 'dev'] as const
+
+type UpgradeChannel = typeof availableChannels[number]
+
+function normalizeChannel(value: unknown): UpgradeChannel {
+  if (typeof value === 'string' && availableChannels.includes(value as UpgradeChannel))
+    return value as UpgradeChannel
+
+  return 'stable'
+}
+
+const channel = ref<UpgradeChannel>('stable')
+
+const channelOptions = computed<SelectProps['options']>(() => [
+  {
+    label: $gettext('Stable'),
+    value: 'stable',
+  },
+  {
+    label: $gettext('Pre-release'),
+    value: 'prerelease',
+  },
+  {
+    label: $gettext('Dev'),
+    value: 'dev',
+  },
+])
 
 const progressStrokeColor = {
   from: '#108ee9',
@@ -39,59 +64,112 @@ function getLatestRelease() {
     lastCheck.value = dayjs().format('YYYY-MM-DD HH:mm:ss')
   }).catch(e => {
     getReleaseError.value = e?.message
-    message.error(e?.message ?? $gettext('Server error'))
   }).finally(() => {
     loading.value = false
   })
 }
 
-getLatestRelease()
+const channelInitialized = ref(false)
 
-watch(channel, getLatestRelease)
+watch(channel, () => {
+  if (!channelInitialized.value)
+    return
+
+  getLatestRelease()
+})
+
+async function initUpgradeChannel() {
+  try {
+    const resp = await upgrade.get_channel()
+    channel.value = normalizeChannel(resp?.channel)
+  }
+  finally {
+    channelInitialized.value = true
+    getLatestRelease()
+  }
+}
+
+initUpgradeChannel()
 
 const isLatestVer = computed(() => {
   return data.value.name === `v${version.version}`
 })
 
-const logContainer = ref()
+const runtimeShortSha = computed(() => {
+  return data.value?.cur_version?.short_hash?.slice(0, 7) || ''
+})
+
+const releaseShortSha = computed(() => {
+  if (!data.value?.name?.startsWith('sha-'))
+    return ''
+
+  return data.value.name.slice(4, 11)
+})
+
+const isCurrentDevBuild = computed(() => {
+  if (channel.value !== 'dev')
+    return false
+
+  if (!runtimeShortSha.value || !releaseShortSha.value)
+    return false
+
+  return runtimeShortSha.value.toLowerCase() === releaseShortSha.value.toLowerCase()
+})
+
+const isCurrentChannelLatest = computed(() => {
+  if (channel.value === 'dev')
+    return isCurrentDevBuild.value
+
+  return isLatestVer.value
+})
+
+const logContainer = useTemplateRef('logContainer')
 
 function log(msg: string) {
   const para = document.createElement('p')
 
   para.appendChild(document.createTextNode($gettext(msg)))
 
-  logContainer.value.appendChild(para)
+  logContainer.value!.appendChild(para)
 
-  logContainer.value.scroll({ top: 320, left: 0, behavior: 'smooth' })
+  logContainer.value!.scroll({ top: 320, left: 0, behavior: 'smooth' })
 }
 
 const dryRun = computed(() => {
   return !!route.query.dry_run
 })
 
+const testCommitAndRestart = computed(() => {
+  return !!route.query.test_commit_and_restart
+})
+
 async function performUpgrade() {
+  await upgrade.save_channel(channel.value).catch(() => null)
+
   progressStatus.value = 'active'
   modalClosable.value = false
   modalVisible.value = true
   progressPercent.value = 0
-  logContainer.value.innerHTML = ''
+  logContainer.value!.innerHTML = ''
 
   log($gettext('Upgrading Nginx UI, please wait...'))
 
-  const ws = websocket('/api/upgrade/perform', false)
+  const { ws } = useWebSocket('/api/upgrade/perform', false)
+  const socket = ws.value!
 
   let last = 0
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
+  socket.onopen = () => {
+    socket.send(JSON.stringify({
       dry_run: dryRun.value,
       channel: channel.value,
+      test_commit_and_restart: testCommitAndRestart.value,
     }))
   }
 
   let isFailed = false
 
-  ws.onmessage = async m => {
+  socket.onmessage = async m => {
     const r = JSON.parse(m.data)
     if (r.message)
       log(r.message)
@@ -114,31 +192,42 @@ async function performUpgrade() {
     }
   }
 
-  ws.onerror = () => {
+  socket.onerror = () => {
     isFailed = true
     progressStatus.value = 'exception'
     modalClosable.value = true
   }
 
-  ws.onclose = async () => {
+  socket.onclose = async () => {
     if (isFailed)
       return
 
     const t = setInterval(() => {
+      const interval = data.value.in_docker ? 10000 : 1000
       upgrade.current_version().then(() => {
         clearInterval(t)
-        progressStatus.value = 'success'
-        progressPercent.value = 100
-        modalClosable.value = true
-        log('Upgraded successfully')
-
-        setInterval(() => {
-          location.reload()
-        }, 1000)
+        setTimeout(() => {
+          progressStatus.value = 'success'
+          progressPercent.value = 100
+          modalClosable.value = true
+          log('Upgraded successfully')
+          setTimeout(() => {
+            location.reload()
+          }, 1000)
+        }, interval)
       })
-    }, 2000)
+    }, 5000)
   }
 }
+
+const performUpgradeBtnText = computed(() => {
+  if (channel.value === 'dev' && !isCurrentDevBuild.value)
+    return $gettext('Install')
+  else if (isCurrentChannelLatest.value)
+    return $gettext('Reinstall')
+  else
+    return $gettext('Upgrade')
+})
 </script>
 
 <template>
@@ -164,12 +253,15 @@ async function performUpgrade() {
     </AModal>
     <div class="upgrade-container">
       <p>{{ $gettext('You can check Nginx UI upgrade at this page.') }}</p>
-      <h3>{{ $gettext('Current Version') }}: v{{ version.version }}</h3>
+      <h3>
+        {{ $gettext('Current Version') }}: v{{ version.version }}
+        <span v-if="runtimeShortSha" class="short-hash">({{ runtimeShortSha }})</span>
+      </h3>
       <template v-if="getReleaseError">
         <AAlert
           type="error"
           :title="$gettext('Get release information error')"
-          :message="getReleaseError"
+          :description="getReleaseError"
           banner
         />
       </template>
@@ -188,33 +280,29 @@ async function performUpgrade() {
           </AButton>
         </p>
         <AFormItem :label="$gettext('Channel')">
-          <ASelect v-model:value="channel">
-            <ASelectOption key="stable">
-              {{ $gettext('Stable') }}
-            </ASelectOption>
-            <ASelectOption key="prerelease">
-              {{ $gettext('Pre-release') }}
-            </ASelectOption>
-          </ASelect>
+          <ASelect
+            v-model:value="channel"
+            :options="channelOptions"
+          />
         </AFormItem>
         <template v-if="!loading">
           <AAlert
-            v-if="isLatestVer"
+            v-if="isCurrentChannelLatest"
             type="success"
-            :message="$gettext('You are using the latest version')"
+            :title="$gettext('You are using the latest version')"
             banner
           />
           <AAlert
             v-else
             type="info"
-            :message="$gettext('New version released')"
+            :title="$gettext('New version released')"
             banner
           />
           <template v-if="dryRun">
             <br>
             <AAlert
               type="info"
-              :message="$gettext('Dry run mode enabled')"
+              :title="$gettext('Dry run mode enabled')"
               banner
             />
           </template>
@@ -225,7 +313,7 @@ async function performUpgrade() {
                 ghost
                 @click="performUpgrade"
               >
-                {{ isLatestVer ? $gettext('Reinstall') : $gettext('Upgrade') }}
+                {{ performUpgradeBtnText }}
               </AButton>
             </ASpace>
           </div>
@@ -249,7 +337,15 @@ async function performUpgrade() {
         </h2>
 
         <h3>{{ $gettext('Release Note') }}</h3>
-        <div v-html="marked.parse(data.body)" />
+        <div v-dompurify-html="marked.parse(data.body)" />
+
+        <a
+          v-if="data.html_url"
+          :href="data.html_url"
+          target="_blank"
+        >
+          {{ $gettext('View on GitHub') }}
+        </a>
       </template>
     </div>
   </ACard>

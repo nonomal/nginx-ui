@@ -3,38 +3,54 @@ package upgrader
 import (
 	"encoding/json"
 	"fmt"
-	_github "github.com/0xJacky/Nginx-UI/.github"
-	"github.com/0xJacky/Nginx-UI/internal/helper"
-	"github.com/0xJacky/Nginx-UI/internal/logger"
-	"github.com/0xJacky/Nginx-UI/settings"
-	"github.com/jpillora/overseer"
-	"github.com/minio/selfupdate"
-	"github.com/pkg/errors"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"code.pfad.fr/risefront"
+	_github "github.com/0xJacky/Nginx-UI/.github"
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/internal/version"
+	"github.com/minio/selfupdate"
+	"github.com/pkg/errors"
+	"github.com/uozi-tech/cosy/logger"
 )
 
+const (
+	UpgradeStatusInfo     = "info"
+	UpgradeStatusError    = "error"
+	UpgradeStatusProgress = "progress"
+)
+
+type CoreUpgradeResp struct {
+	Status   string  `json:"status"`
+	Progress float64 `json:"progress"`
+	Message  string  `json:"message"`
+}
+
 type Upgrader struct {
-	Release TRelease
-	RuntimeInfo
+	Channel string
+	Release version.TRelease
+	version.RuntimeInfo
 }
 
 func NewUpgrader(channel string) (u *Upgrader, err error) {
-	data, err := GetRelease(channel)
+	data, err := version.GetRelease(channel)
 	if err != nil {
 		return
 	}
-	runtimeInfo, err := GetRuntimeInfo()
+	runtimeInfo, err := version.GetRuntimeInfo()
 	if err != nil {
 		return
 	}
 	u = &Upgrader{
+		Channel:     channel,
 		Release:     data,
 		RuntimeInfo: runtimeInfo,
 	}
@@ -51,13 +67,18 @@ type ProgressWriter struct {
 func (pw *ProgressWriter) Write(p []byte) (int, error) {
 	n, err := pw.Writer.Write(p)
 	pw.currentSize += int64(n)
-	progress := float64(pw.currentSize) / float64(pw.totalSize) * 100
-	pw.progressChan <- progress
+	if pw.totalSize > 0 && pw.progressChan != nil {
+		progress := float64(pw.currentSize) / float64(pw.totalSize) * 100
+		pw.progressChan <- progress
+	}
 	return n, err
 }
 
 func downloadRelease(url string, dir string, progressChan chan float64) (tarName string, err error) {
-	client := &http.Client{}
+	client, err := version.NewHTTPClient()
+	if err != nil {
+		return
+	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return
@@ -67,10 +88,17 @@ func downloadRelease(url string, dir string, progressChan chan float64) (tarName
 		return
 	}
 	defer resp.Body.Close()
-
-	totalSize, err := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
-	if err != nil {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		err = fmt.Errorf("download release: unexpected HTTP status %s", resp.Status)
 		return
+	}
+
+	var totalSize int64
+	if contentLength := resp.Header.Get("Content-Length"); contentLength != "" {
+		totalSize, err = strconv.ParseInt(contentLength, 10, 64)
+		if err != nil {
+			return
+		}
 	}
 
 	file, err := os.CreateTemp(dir, "nginx-ui-temp-*.tar.gz")
@@ -78,13 +106,19 @@ func downloadRelease(url string, dir string, progressChan chan float64) (tarName
 		err = errors.Wrap(err, "service.DownloadLatestRelease CreateTemp error")
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(file.Name())
+		}
+	}()
 
 	progressWriter := &ProgressWriter{Writer: file, totalSize: totalSize, progressChan: progressChan}
 	multiWriter := io.MultiWriter(progressWriter)
 
 	_, err = io.Copy(multiWriter, resp.Body)
-	close(progressChan)
 
 	tarName = file.Name()
 	return
@@ -102,66 +136,62 @@ func (u *Upgrader) DownloadLatestRelease(progressChan chan float64) (tarName str
 	}
 	var buildJson map[string]map[string]buildArch
 
-	_ = json.Unmarshal(bytes, &buildJson)
+	if err = json.Unmarshal(bytes, &buildJson); err != nil {
+		err = errors.Wrap(err, "service.DownloadLatestRelease parse build_info.json error")
+		return
+	}
 
 	build, ok := buildJson[u.OS]
 	if !ok {
-		err = errors.Wrap(err, "os not support upgrade")
+		err = ErrUnsupportedPlatform
 		return
 	}
 	arch, ok := build[u.Arch]
 	if !ok {
-		err = errors.Wrap(err, "arch not support upgrade")
+		err = ErrUnsupportedPlatform
 		return
 	}
 
 	assetsMap := u.Release.GetAssetsMap()
 
 	// asset
-	asset, ok := assetsMap[fmt.Sprintf("nginx-ui-%s.tar.gz", arch.Name)]
+	assetName := fmt.Sprintf("nginx-ui-%s.tar.gz", arch.Name)
+	asset, ok := assetsMap[assetName]
 
 	if !ok {
-		err = errors.Wrap(err, "upgrader core asset is empty")
+		err = ErrReleaseAssetEmpty
 		return
 	}
 
 	downloadUrl := asset.BrowserDownloadUrl
 	if downloadUrl == "" {
-		err = errors.New("upgrader core downloadUrl is empty")
+		err = ErrDownloadUrlEmpty
+		return
+	}
+
+	// authenticity signature
+	signatureAsset, ok := assetsMap[assetName+".minisig"]
+	if !ok || signatureAsset.BrowserDownloadUrl == "" {
+		err = ErrSignatureEmpty
 		return
 	}
 
 	// digest
 	digest, ok := assetsMap[fmt.Sprintf("nginx-ui-%s.tar.gz.digest", arch.Name)]
 	if !ok || digest.BrowserDownloadUrl == "" {
-		err = errors.New("upgrader core digest is empty")
+		err = ErrDigestEmpty
 		return
 	}
 
-	if settings.ServerSettings.GithubProxy != "" {
-		digest.BrowserDownloadUrl, err = url.JoinPath(settings.ServerSettings.GithubProxy, digest.BrowserDownloadUrl)
-		if err != nil {
-			err = errors.Wrap(err, "service.DownloadLatestRelease url.JoinPath error")
-			return
-		}
+	if u.Channel != string(version.ReleaseTypeDev) {
+		digest.BrowserDownloadUrl = version.GetUrl(digest.BrowserDownloadUrl)
 	}
-
-	resp, err := http.Get(digest.BrowserDownloadUrl)
-	if err != nil {
-		err = errors.Wrap(err, "upgrader core download digest fail")
-		return
-	}
-
-	defer resp.Body.Close()
 
 	dir := filepath.Dir(u.ExPath)
 
-	if settings.ServerSettings.GithubProxy != "" {
-		downloadUrl, err = url.JoinPath(settings.ServerSettings.GithubProxy, downloadUrl)
-		if err != nil {
-			err = errors.Wrap(err, "service.DownloadLatestRelease url.JoinPath error")
-			return
-		}
+	if u.Channel != string(version.ReleaseTypeDev) {
+		downloadUrl = version.GetUrl(downloadUrl)
+		signatureAsset.BrowserDownloadUrl = version.GetUrl(signatureAsset.BrowserDownloadUrl)
 	}
 
 	tarName, err = downloadRelease(downloadUrl, dir, progressChan)
@@ -169,11 +199,32 @@ func (u *Upgrader) DownloadLatestRelease(progressChan chan float64) (tarName str
 		err = errors.Wrap(err, "service.DownloadLatestRelease downloadFile error")
 		return
 	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tarName)
+			_ = os.Remove(tarName + ".minisig")
+		}
+	}()
+
+	signatureBytes, err := downloadMetadata(signatureAsset.BrowserDownloadUrl, 64<<10)
+	if err != nil {
+		err = errors.Wrap(err, "upgrader core download signature fail")
+		return
+	}
+	keyID, err := verifyArchiveSignature(tarName, signatureBytes)
+	if err != nil {
+		return
+	}
+	if err = os.WriteFile(tarName+".minisig", signatureBytes, 0o600); err != nil {
+		err = errors.Wrap(err, "stage verified upgrader signature")
+		return
+	}
+	logger.Debug("DownloadLatestRelease verified Minisign key", fmt.Sprintf("%016X", keyID))
 
 	// check tar digest
-	digestFileBytes, err := io.ReadAll(resp.Body)
+	digestFileBytes, err := downloadMetadata(digest.BrowserDownloadUrl, 4<<10)
 	if err != nil {
-		err = errors.Wrap(err, "digest file content read error")
+		err = errors.Wrap(err, "upgrader core download digest fail")
 		return
 	}
 
@@ -183,33 +234,66 @@ func (u *Upgrader) DownloadLatestRelease(progressChan chan float64) (tarName str
 	logger.Debug("DownloadLatestRelease digestFileContent", digestFileContent)
 
 	if digestFileContent == "" {
-		err = errors.New("digest file content is empty")
+		err = ErrDigestFileEmpty
 		return
 	}
 
 	exeSHA512 := helper.DigestSHA512(tarName)
 	if exeSHA512 == "" {
-		err = errors.New("executable binary file is empty")
+		err = ErrExecutableBinaryEmpty
 		return
 	}
 
 	if digestFileContent != exeSHA512 {
-		err = errors.Wrap(err, "digest not equal")
+		err = ErrDigestMismatch
 		return
 	}
 
 	return
 }
 
+func downloadMetadata(url string, maxBytes int64) ([]byte, error) {
+	client, err := version.NewHTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("download metadata: unexpected HTTP status %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, errors.New("downloaded metadata exceeds size limit")
+	}
+	return data, nil
+}
+
 var updateInProgress atomic.Bool
 
 func (u *Upgrader) PerformCoreUpgrade(tarPath string) (err error) {
 	if !updateInProgress.CompareAndSwap(false, true) {
-		return errors.New("update already in progress")
+		return ErrUpdateInProgress
 	}
 	defer updateInProgress.Store(false)
+	if _, err = verifyAdjacentArchiveSignature(tarPath); err != nil {
+		return err
+	}
 
-	opts := selfupdate.Options{}
+	oldExe := ""
+	if runtime.GOOS == "windows" {
+		oldExe = filepath.Join(filepath.Dir(u.ExPath), ".nginx-ui.old."+strconv.FormatInt(time.Now().Unix(), 10))
+	}
+
+	opts := selfupdate.Options{
+		OldSavePath: oldExe,
+	}
 
 	if err = opts.CheckPermissions(); err != nil {
 		return err
@@ -227,7 +311,13 @@ func (u *Upgrader) PerformCoreUpgrade(tarPath string) (err error) {
 		return
 	}
 
-	f, err := os.Open(filepath.Join(tempDir, "nginx-ui"))
+	nginxUIExName := "nginx-ui"
+
+	if u.OS == "windows" {
+		nginxUIExName = "nginx-ui.exe"
+	}
+
+	f, err := os.Open(filepath.Join(tempDir, nginxUIExName))
 	if err != nil {
 		err = errors.Wrap(err, "PerformCoreUpgrade open error")
 		return
@@ -253,8 +343,21 @@ func (u *Upgrader) PerformCoreUpgrade(tarPath string) (err error) {
 		return err
 	}
 
-	// gracefully restart
-	overseer.Restart()
+	// wait for the file to be written
+	time.Sleep(1 * time.Second)
 
+	// gracefully restart
+	risefront.Restart()
 	return
+}
+
+func verifyAdjacentArchiveSignature(archivePath string) (uint64, error) {
+	signature, err := os.ReadFile(archivePath + ".minisig")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, ErrSignatureEmpty
+		}
+		return 0, err
+	}
+	return verifyArchiveSignature(archivePath, signature)
 }

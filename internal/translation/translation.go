@@ -3,11 +3,12 @@ package translation
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/0xJacky/Nginx-UI/app"
-	"github.com/0xJacky/pofile/pofile"
-	"github.com/samber/lo"
 	"io"
 	"log"
+
+	"github.com/0xJacky/Nginx-UI/app"
+	"github.com/0xJacky/pofile"
+	"github.com/samber/lo"
 )
 
 var Dict map[string]pofile.Dict
@@ -15,7 +16,15 @@ var Dict map[string]pofile.Dict
 func init() {
 	Dict = make(map[string]pofile.Dict)
 
-	i18nJson, _ := app.DistFS.Open("i18n.json")
+	fs, err := app.GetDistFS()
+	if err != nil {
+		log.Fatalln("Failed to get DistFS:", err)
+	}
+
+	i18nJson, err := fs.Open("i18n.json")
+	if err != nil {
+		log.Fatalln("Failed to open i18n.json:", err)
+	}
 
 	defer i18nJson.Close()
 
@@ -35,7 +44,12 @@ func init() {
 }
 
 func handlePo(langCode string) {
-	file, err := app.DistFS.Open(fmt.Sprintf("src/language/%s/app.po", langCode))
+	fsys, err := app.GetDistFS()
+	if err != nil {
+		log.Fatalln("Failed to get DistFS:", err)
+	}
+
+	file, err := fsys.Open(fmt.Sprintf("src/language/%s.po", langCode))
 
 	if err != nil {
 		log.Fatalln(err)

@@ -22,6 +22,24 @@ const members = [
       { icon: { svg: blogIcon }, link: 'https://blog.kugeek.com' }
     ]
   },
+{
+    avatar: 'https://www.github.com/akinoccc.png',
+    name: 'Akino',
+    title: '開發者',
+    links: [
+      { icon: 'github', link: 'https://github.com/akinoccc' },
+      { icon: { svg: blogIcon }, link: 'https://akino.icu' }
+    ]
+  },
+  {
+    avatar: 'https://avatars.githubusercontent.com/u/126759922?s=200&v=4',
+    name: 'Cursor',
+    title: '開發者',
+    links: [
+      { icon: 'github', link: "https://github.com/cursor/cursor" },
+      { icon: { svg: blogIcon }, link: 'https://www.cursor.com/cn/blog' }
+    ]
+  }
 ]
 </script>
 
@@ -35,9 +53,9 @@ const members = [
 
 </div>
 
-Nginx UI 是一個全新的 Nginx 網路管理介面，旨在簡化 Nginx 伺服器的管理和配置。它提供實時伺服器統計資料、ChatGPT
-助手、一鍵部署、Let's Encrypt 證書的自動續簽以及使用者友好的網站配置編輯工具。此外，Nginx UI 還提供了線上訪問 Nginx
-日誌、配置檔案的自動測試和過載、網路終端、深色模式和自適應網頁設計等功能。Nginx UI 採用 Go 和 Vue 構建，確保在管理 Nginx
+Nginx UI 是一個全新的 Nginx 網路管理介面，目的是簡化 Nginx 伺服器的管理和設定。它提供即時伺服器統計資料、ChatGPT
+助手、一鍵部署、Let's Encrypt 證書的自動續簽以及使用者友好的網站設定編輯工具。此外，Nginx UI 還提供了線上存取 Nginx
+日誌、設定檔案的自動測試和過載、網路終端、深色模式和自適應網頁設計等功能。Nginx UI 採用 Go 和 Vue 建構，確保在管理 Nginx
 伺服器時提供無縫高效的體驗。
 
 ## 我們的團隊
@@ -47,12 +65,15 @@ Nginx UI 是一個全新的 Nginx 網路管理介面，旨在簡化 Nginx 伺服
 ## 特色
 
 - 線上檢視伺服器 CPU、記憶體、系統負載、磁碟使用率等指標
-- 線上 ChatGPT 助理
+- 設定修改後會自動備份，可以對比任意版本或恢復到任意版本
+- 支援鏡像操作到多個叢集節點，輕鬆管理多伺服器環境
+- 匯出加密的 Nginx/NginxUI 設定，方便快速部署和恢復到新環境
+- 增強版線上 ChatGPT 助手，支援多種模型，包括顯示 Deepseek-R1 的思考鏈，幫助您更好地理解和最佳化設定
 - 一鍵申請和自動續簽 Let's encrypt 憑證
-- 線上編輯 Nginx 配置檔案，編輯器支援 Nginx 配置語法突顯
+- 線上編輯 Nginx 配置檔案，編輯器支援 **大模型代碼補全** 和 Nginx 配置語法突顯
 - 線上檢視 Nginx 日誌
 - 使用 Go 和 Vue 開發，發行版本為單個可執行檔案
-- 儲存配置後自動測試配置檔案並重載 Nginx
+- 儲存設定後自動測試設定檔案並過載 Nginx
 - 基於網頁瀏覽器的高階命令列終端
 - 支援暗黑模式
 - 自適應網頁設計
@@ -71,13 +92,17 @@ Nginx UI 可在以下作業系統中使用：
 
 ## 國際化
 
-- 英語
+我們目前官方支援以下語言：
+
+- 英文
 - 簡體中文
-- 繁體中文
+- 正體中文
 
-我們歡迎您將專案翻譯成任何語言。
+由於我們並非英文母語者，儘管已盡力確保準確性，仍可能有改進的空間。若您發現任何問題，歡迎提供回饋！
 
-## 構建基於
+此外，感謝熱心的社群貢獻更多語言支援，歡迎前往 [Weblate](https://weblate.nginxui.com) 瀏覽並參與翻譯，共同打造更完善的多語言體驗！
+
+## 建構基於
 
 - [The Go Programming Language](https://go.dev)
 - [Gin Web Framework](https://gin-gonic.com)
@@ -89,3 +114,4 @@ Nginx UI 可在以下作業系統中使用：
 - [vue3-gettext](https://github.com/jshmrtn/vue3-gettext)
 - [vue3-ace-editor](https://github.com/CarterLi/vue3-ace-editor)
 - [Gonginx](https://github.com/tufanbarisyildirim/gonginx)
+- [lego](https://github.com/go-acme/lego)

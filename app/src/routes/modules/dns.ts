@@ -1,0 +1,77 @@
+import type { RouteRecordRaw } from 'vue-router'
+import { CloudServerOutlined } from '@antdv-next/icons'
+
+export const dnsRoutes: RouteRecordRaw[] = [
+  {
+    path: 'dns',
+    name: 'DNS',
+    component: () => import('@/layouts/BaseRouterView.vue'),
+    meta: {
+      name: () => $gettext('DNS'),
+      icon: CloudServerOutlined,
+    },
+    children: [
+      {
+        path: '',
+        name: 'DNS Home',
+        component: () => import('@/views/dns/index.vue'),
+        meta: {
+          name: () => $gettext('DNS'),
+          hiddenInSidebar: true,
+        },
+      },
+      {
+        path: 'credentials',
+        name: 'DNS Credentials',
+        component: () => import('@/views/dns/DNSCredential.vue'),
+        meta: {
+          name: () => $gettext('Credentials'),
+        },
+      },
+      {
+        path: 'domains',
+        name: 'DNS Domains',
+        component: () => import('@/views/dns/DNSDomainList.vue'),
+        meta: {
+          name: () => $gettext('DNS Domains'),
+        },
+      },
+      {
+        path: 'groups',
+        name: 'DNS Groups',
+        component: () => import('@/views/dns/DNSGroupList.vue'),
+        meta: {
+          name: () => $gettext('Groups'),
+        },
+      },
+      {
+        path: 'ddns',
+        name: 'DNS DDNS',
+        component: () => import('@/views/dns/DDNSManager.vue'),
+        meta: {
+          name: () => $gettext('DDNS'),
+        },
+      },
+      {
+        path: 'domains/:id/records',
+        name: 'DNS Domain Records',
+        component: () => import('@/views/dns/DNSRecordManager.vue'),
+        meta: {
+          name: () => $gettext('DNS Records'),
+          hiddenInSidebar: true,
+          lastRouteName: 'DNS Domains',
+        },
+      },
+      {
+        path: 'groups/:id/records',
+        name: 'DNS Group Records',
+        component: () => import('@/views/dns/DNSGroupRecordManager.vue'),
+        meta: {
+          name: () => $gettext('Group Records'),
+          hiddenInSidebar: true,
+          lastRouteName: 'DNS Groups',
+        },
+      },
+    ],
+  },
+]

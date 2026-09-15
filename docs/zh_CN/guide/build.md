@@ -18,8 +18,8 @@
 请在 `app` 目录中执行以下命令。
 
 ```shell
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 ## 构建后端
@@ -31,5 +31,6 @@ pnpm build
 请在项目的根目录执行以下命令。
 
 ```shell
+go generate
 go build -tags=jsoniter -ldflags "$LD_FLAGS -X 'github.com/0xJacky/Nginx-UI/settings.buildTime=$(date +%s)'" -o nginx-ui -v main.go
 ```

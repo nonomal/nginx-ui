@@ -1,19 +1,22 @@
 import type { ModelBase } from '@/api/curd'
-import Curd from '@/api/curd'
-import http from '@/lib/http'
+import { extendCurdApi, http, useCurdApi } from '@uozi-admin/request'
+
+export interface NotificationDetails {
+  response?: string | Record<string, unknown>
+  [key: string]: unknown
+}
 
 export interface Notification extends ModelBase {
   type: string
   title: string
-  details: string
+  content: string
+  details: string | NotificationDetails | null
 }
 
-class NotificationCurd extends Curd<Notification> {
-  public clear() {
-    return http.delete(this.plural)
-  }
-}
+const baseUrl = '/notifications'
 
-const notification = new NotificationCurd('/notification')
+const notification = extendCurdApi(useCurdApi<Notification>(baseUrl), {
+  clear: () => http.delete(baseUrl),
+})
 
 export default notification

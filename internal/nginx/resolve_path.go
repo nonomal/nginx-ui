@@ -1,0 +1,315 @@
+package nginx
+
+import (
+	"path/filepath"
+	"strings"
+
+	"github.com/0xJacky/Nginx-UI/internal/helper"
+	"github.com/0xJacky/Nginx-UI/settings"
+	"github.com/uozi-tech/cosy/logger"
+)
+
+var (
+	nginxPrefixCache  nginxStringCache
+	nginxPIDPathCache nginxStringCache
+)
+
+// GetNginxExeDir Returns the directory containing the nginx executable
+func GetNginxExeDir() string {
+	return filepath.Dir(getNginxSbinPath())
+}
+
+// Resolves relative paths by joining them with the nginx executable directory
+// when the target nginx runs on Windows.
+func resolvePath(path string) string {
+	if path == "" {
+		return ""
+	}
+
+	// Handle relative paths on Windows
+	if targetGOOS() == "windows" && !filepath.IsAbs(path) {
+		return filepath.Join(GetNginxExeDir(), path)
+	}
+
+	return path
+}
+
+// ExtractConfigureArg returns the value of a `--flag=value` entry from
+// `nginx -V` output. The flag may be given with or without its leading dashes;
+// quoted values are unwrapped and unquoted ones end at the next ` --` or line
+// break. It returns "" when the flag is absent.
+func ExtractConfigureArg(out, flag string) string {
+	if out == "" || flag == "" {
+		return ""
+	}
+
+	if !strings.HasPrefix(flag, "--") {
+		flag = "--" + flag
+	}
+
+	needle := flag + "="
+	idx := strings.Index(out, needle)
+	if idx == -1 {
+		return ""
+	}
+
+	start := idx + len(needle)
+	if start >= len(out) {
+		return ""
+	}
+
+	value := out[start:]
+	value = strings.TrimLeft(value, " \t")
+	if value == "" {
+		return ""
+	}
+
+	if value[0] == '"' || value[0] == '\'' {
+		quoteChar := value[0]
+		rest := value[1:]
+		closingIdx := strings.IndexByte(rest, quoteChar)
+		if closingIdx == -1 {
+			return strings.TrimSpace(rest)
+		}
+		return strings.TrimSpace(rest[:closingIdx])
+	}
+
+	cut := len(value)
+	if idx := strings.Index(value, " --"); idx != -1 && idx < cut {
+		cut = idx
+	}
+	if idx := strings.IndexAny(value, "\r\n"); idx != -1 && idx < cut {
+		cut = idx
+	}
+
+	return strings.TrimSpace(value[:cut])
+}
+
+// GetPrefix returns the prefix of the nginx executable
+func GetPrefix() string {
+	return nginxPrefixCache.get(func() string {
+		out := getNginxV()
+		prefix := ExtractConfigureArg(out, "--prefix")
+		if prefix == "" {
+			logger.Debug("nginx.GetPrefix len(match) < 1")
+			if targetGOOS() == "windows" {
+				return GetNginxExeDir()
+			}
+			return "/usr/local/nginx"
+		}
+
+		return resolvePath(prefix)
+	})
+}
+
+// GetConfPath returns the nginx configuration directory (e.g. "/etc/nginx").
+// It tries to derive it from `nginx -V --conf-path=...`.
+// If parsing fails, it falls back to a reasonable default instead of returning "".
+func GetConfPath(dir ...string) (confPath string) {
+	if settings.NginxSettings.ConfigDir == "" {
+		out := getNginxV()
+		fullConf := ExtractConfigureArg(out, "--conf-path")
+
+		if fullConf != "" {
+			confPath = filepath.Dir(fullConf)
+		} else {
+			if targetGOOS() == "windows" {
+				confPath = GetPrefix()
+			} else {
+				confPath = "/etc/nginx"
+			}
+
+			logger.Debug("nginx.GetConfPath fallback used", "base", confPath)
+		}
+	} else {
+		confPath = settings.NginxSettings.ConfigDir
+	}
+
+	confPath = resolvePath(confPath)
+
+	joined := filepath.Clean(filepath.Join(confPath, filepath.Join(dir...)))
+	if !helper.IsUnderDirectory(joined, confPath) {
+		return confPath
+	}
+	return joined
+}
+
+// GetConfEntryPath returns the absolute path to the main nginx.conf.
+// It prefers the value from `nginx -V --conf-path=...`.
+// If that can't be parsed, it falls back to "<confDir>/nginx.conf".
+func GetConfEntryPath() (path string) {
+	if settings.NginxSettings.ConfigPath == "" {
+		out := getNginxV()
+		path = ExtractConfigureArg(out, "--conf-path")
+
+		if path == "" {
+			baseDir := GetConfPath()
+
+			if baseDir != "" {
+				path = filepath.Join(baseDir, "nginx.conf")
+			} else {
+				logger.Error("nginx.GetConfEntryPath: cannot determine nginx.conf path")
+				path = ""
+			}
+		}
+	} else {
+		path = settings.NginxSettings.ConfigPath
+	}
+
+	return resolvePath(path)
+}
+
+// GetPIDPath returns the nginx master process PID file path.
+// Resolution order:
+//  1. User override via settings (PIDPath)
+//  2. Runtime override from `nginx -T` for non-local modes (handles nginx-unprivileged etc.)
+//  3. Compile-time default from `nginx -V --pid-path=...`
+//  4. Probing common candidate paths on the resolved runner
+//
+// The configured override is read on every call so a settings change takes
+// effect immediately. The discovered path is memoized because resolving it on a
+// remote target costs one exec per probe, and callers such as the performance
+// ticker ask for it every few seconds.
+func GetPIDPath() (path string) {
+	if settings.NginxSettings.PIDPath != "" {
+		return resolvePath(settings.NginxSettings.PIDPath)
+	}
+
+	return nginxPIDPathCache.get(discoverPIDPath)
+}
+
+// discoverPIDPath resolves the PID path from the target nginx without
+// consulting the cache. It returns "" when nothing could be determined so the
+// cache keeps retrying on the next call.
+func discoverPIDPath() (path string) {
+	runner := resolveRunner()
+	isLocal := settings.NginxSettings.ControlMode() == settings.ControlModeLocal
+
+	if !isLocal {
+		// The running configuration is authoritative. Images such as
+		// nginx-unprivileged override the compiled /run/nginx.pid default with
+		// a writable path such as /tmp/nginx.pid.
+		if runtimePath := getPIDPathFromNginxT(); runtimePath != "" {
+			return resolvePath(runtimePath)
+		}
+	}
+
+	// Try compile-time default from nginx -V
+	out := getNginxV()
+	path = ExtractConfigureArg(out, "--pid-path")
+
+	// Only retain the compiled default when it exists on the target.
+	if path != "" && !isLocal && !runner.Stat(path) {
+		logger.Debug("GetPIDPath: compile-time pid-path not found on target", "path", path)
+		path = ""
+	}
+
+	// For local Nginx, try the runtime directive when nginx -V has no default.
+	if path == "" && isLocal {
+		path = getPIDPathFromNginxT()
+	}
+
+	// Fallback: probe common candidate locations
+	if path == "" {
+		candidates := []string{
+			"/var/run/nginx.pid",
+			"/run/nginx.pid",
+			"/tmp/nginx.pid",
+		}
+
+		for _, c := range candidates {
+			if runner.Stat(c) {
+				logger.Debug("GetPIDPath fallback hit", "path", c, "mode", settings.NginxSettings.ControlMode())
+				path = c
+				break
+			}
+		}
+
+		if path == "" {
+			logger.Error("GetPIDPath: could not determine PID path")
+			return ""
+		}
+	}
+
+	return resolvePath(path)
+}
+
+// GetSbinPath returns the path of the nginx executable
+func GetSbinPath() (path string) {
+	return getNginxSbinPath()
+}
+
+// GetAccessLogPath returns the path of the nginx access log file
+func GetAccessLogPath() (path string) {
+	path = settings.NginxSettings.AccessLogPath
+
+	if path == "" {
+		out := getNginxV()
+		path = ExtractConfigureArg(out, "--http-log-path")
+		if path != "" {
+			resolvedPath := resolvePath(path)
+
+			// Check if the matched path exists but is not a regular file
+			if !isValidRegularFile(resolvedPath) {
+				logger.Debug("access log path from nginx -V exists but is not a regular file, try to get from nginx -T output", "path", resolvedPath)
+				fallbackPath := getAccessLogPathFromNginxT()
+				if fallbackPath != "" {
+					path = fallbackPath
+					return path // Already resolved in getAccessLogPathFromNginxT
+				}
+			}
+		}
+		if path == "" {
+			logger.Debug("access log path not found in nginx -V output, try to get from nginx -T output")
+			path = getAccessLogPathFromNginxT()
+		}
+	}
+
+	return resolvePath(path)
+}
+
+// GetErrorLogPath returns the path of the nginx error log file
+func GetErrorLogPath() string {
+	path := settings.NginxSettings.ErrorLogPath
+
+	if path == "" {
+		out := getNginxV()
+		path = ExtractConfigureArg(out, "--error-log-path")
+		if path != "" {
+			resolvedPath := resolvePath(path)
+
+			// Check if the matched path exists but is not a regular file
+			if !isValidRegularFile(resolvedPath) {
+				logger.Debug("error log path from nginx -V exists but is not a regular file, try to get from nginx -T output", "path", resolvedPath)
+				fallbackPath := getErrorLogPathFromNginxT()
+				if fallbackPath != "" {
+					path = fallbackPath
+					return path // Already resolved in getErrorLogPathFromNginxT
+				}
+			}
+		}
+		if path == "" {
+			logger.Debug("error log path not found in nginx -V output, try to get from nginx -T output")
+			path = getErrorLogPathFromNginxT()
+		}
+	}
+
+	return resolvePath(path)
+}
+
+// GetModulesPath returns the path of the nginx modules
+func GetModulesPath() string {
+	// First try to get from nginx -V output
+	out := getNginxV()
+	if out != "" {
+		if path := ExtractConfigureArg(out, "--modules-path"); path != "" {
+			return resolvePath(path)
+		}
+	}
+
+	// Default path if not found
+	if targetGOOS() == "windows" {
+		return resolvePath("modules")
+	}
+	return resolvePath("/usr/lib/nginx/modules")
+}

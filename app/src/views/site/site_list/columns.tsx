@@ -1,0 +1,167 @@
+import type {
+  CustomRenderArgs,
+  StdTableColumn,
+} from '@uozi-admin/curd'
+import type { Site, SiteStatus } from '@/api/site'
+import type { JSXElements } from '@/types'
+import { datetimeRender } from '@uozi-admin/curd'
+import { Tag } from 'antdv-next'
+import namespace from '@/api/namespace'
+import NamespaceRender from '@/components/NamespaceRender'
+import ProxyTargets from '@/components/ProxyTargets'
+import { ConfigStatus } from '@/constants'
+import namespaceColumns from '@/views/namespace/columns'
+import SiteStatusSelect from '@/views/site/components/SiteStatusSelect.vue'
+
+const columns: StdTableColumn[] = [{
+  title: () => $gettext('Search'),
+  dataIndex: 'search',
+  search: {
+    type: 'input',
+    input: {
+      placeholder: $gettext('Name or content'),
+    },
+  },
+  width: 150,
+  hiddenInEdit: true,
+  hiddenInTable: true,
+  hiddenInDetail: true,
+}, {
+  title: () => $gettext('Name'),
+  dataIndex: 'name',
+  sorter: true,
+  pure: true,
+  edit: {
+    type: 'input',
+  },
+  search: true,
+  width: 150,
+  customRender: ({ text, record }: CustomRenderArgs) => {
+    const template: JSXElements = []
+
+    // Add site name
+    template.push(
+      <div>{text}</div>,
+    )
+
+    if (record.description) {
+      template.push(
+        <div class="text-secondary mt-1">{record.description}</div>,
+      )
+    }
+
+    // Add URLs below the name
+    if (record.urls && record.urls.length > 0) {
+      const urlsContainer: JSXElements = []
+
+      if (record.status !== ConfigStatus.Disabled) {
+        record.urls.forEach((url: string) => {
+          const displayUrl = url.replace(/^https?:\/\//, '')
+          urlsContainer.push(
+            <a href={url} target="_blank" rel="noopener noreferrer">
+              <Tag color="blue" variant="filled" style={{ marginRight: '8px', marginBottom: '4px' }}>
+                {displayUrl}
+              </Tag>
+            </a>,
+          )
+        })
+      }
+      else {
+        record.urls.forEach((url: string) => {
+          const displayUrl = url.replace(/^https?:\/\//, '')
+          urlsContainer.push(<Tag variant="filled" style={{ marginRight: '8px', marginBottom: '4px' }}>{displayUrl}</Tag>)
+        })
+      }
+
+      template.push(
+        <div style="display: flex; flex-wrap: wrap; margin: 4px 0;">{urlsContainer}</div>,
+      )
+    }
+
+    return h('div', {}, template)
+  },
+}, {
+  title: () => $gettext('Proxy Targets'),
+  dataIndex: 'proxy_targets',
+  width: 200,
+  customRender: ({ record }: CustomRenderArgs) => {
+    if (record.proxy_targets && record.proxy_targets.length > 0) {
+      return h(ProxyTargets, {
+        namespaceId: record.namespace_id,
+        targets: record.proxy_targets,
+      })
+    }
+    return h('span', '-')
+  },
+}, {
+  title: () => $gettext('Namespace'),
+  dataIndex: 'namespace_id',
+  customRender: ({ record }: CustomRenderArgs<Site>) => {
+    return h(NamespaceRender, {
+      namespace: record.namespace || null,
+    })
+  },
+  edit: {
+    type: 'selector',
+    selector: {
+      getListApi: namespace.getList,
+      columns: namespaceColumns,
+      valueKey: 'id',
+      displayKey: 'name',
+      selectionType: 'radio',
+    },
+  },
+  batchEdit: true,
+  sorter: true,
+  pure: true,
+  width: 100,
+}, {
+  title: () => $gettext('Updated at'),
+  dataIndex: 'modified_at',
+  customRender: datetimeRender,
+  sorter: true,
+  pure: true,
+  width: 150,
+}, {
+  title: () => $gettext('Status'),
+  dataIndex: 'status',
+  customRender: (args: CustomRenderArgs<Site>) => {
+    const { text, record } = args
+    return h(SiteStatusSelect, {
+      status: text as SiteStatus,
+      siteName: record.name,
+      onStatusChanged: ({ status }: { status: SiteStatus }) => {
+        record.status = status
+      },
+    })
+  },
+  search: {
+    type: 'select',
+    select: {
+      options: [
+        {
+          label: $gettext('Enabled'),
+          value: ConfigStatus.Enabled,
+        },
+        {
+          label: $gettext('Disabled'),
+          value: ConfigStatus.Disabled,
+        },
+        {
+          label: $gettext('Maintenance'),
+          value: ConfigStatus.Maintenance,
+        },
+      ],
+    },
+  },
+  sorter: true,
+  pure: true,
+  width: 100,
+}, {
+  title: () => $gettext('Actions'),
+  dataIndex: 'actions',
+  width: 120,
+  fixed: 'right',
+}]
+
+export default columns

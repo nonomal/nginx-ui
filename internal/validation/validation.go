@@ -1,9 +1,9 @@
 package validation
 
 import (
-	"github.com/0xJacky/Nginx-UI/internal/logger"
 	"github.com/gin-gonic/gin/binding"
 	val "github.com/go-playground/validator/v10"
+	"github.com/uozi-tech/cosy/logger"
 )
 
 func Init() {
@@ -12,12 +12,7 @@ func Init() {
 		logger.Fatal("failed to initialize binding validator engine")
 	}
 
-	err := v.RegisterValidation("safety_text", safetyText)
-	if err != nil {
-		logger.Fatal(err)
-	}
-
-	err = v.RegisterValidation("certificate", isCertificate)
+	err := v.RegisterValidation("certificate", isCertificate)
 	if err != nil {
 		logger.Fatal(err)
 	}
@@ -42,5 +37,8 @@ func Init() {
 		logger.Fatal(err)
 	}
 
-	return
+	err = v.RegisterValidation("redacted", redacted)
+	if err != nil {
+		logger.Fatal(err)
+	}
 }

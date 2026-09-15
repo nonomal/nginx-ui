@@ -1,22 +1,21 @@
 <script setup lang="ts">
-
-// This starter template is using Vue 3 <script setup> SFCs
-// Check out https://vuejs.org/api/sfc-script-setup.html#script-setup
-import { computed, provide } from 'vue'
-import { theme } from 'ant-design-vue'
-import zh_CN from 'ant-design-vue/es/locale/zh_CN'
-import zh_TW from 'ant-design-vue/es/locale/zh_TW'
-import en_US from 'ant-design-vue/es/locale/en_US'
-
-import { useSettingsStore } from '@/pinia'
-import gettext from '@/gettext'
+import { theme } from 'antdv-next'
+import en_US from 'antdv-next/locale/en_US'
+import zh_CN from 'antdv-next/locale/zh_CN'
+import zh_TW from 'antdv-next/locale/zh_TW'
 import loadTranslations from '@/api/translations'
+import AppProvider from '@/components/AppProvider'
+import { useSessionExpiry } from '@/composables/useSessionExpiry'
+import gettext from '@/gettext'
+import { useSettingsStore } from '@/pinia'
 
 const route = useRoute()
 
+useSessionExpiry()
+
 const media = window.matchMedia('(prefers-color-scheme: dark)')
 
-const callback = () => {
+function callback() {
   const settings = useSettingsStore()
   if (settings.preference_theme === 'auto') {
     if (media.matches)
@@ -64,12 +63,16 @@ loadTranslations(route)
     :locale="lang"
     :auto-insert-space-in-button="false"
   >
-    <RouterView />
+    <AApp>
+      <AppProvider>
+        <RouterView />
+      </AppProvider>
+    </AApp>
   </AConfigProvider>
 </template>
 
 <style lang="less">
-@import "ant-design-vue/dist/reset.css";
+@import "antdv-next/dist/reset.css";
 
 .dark {
   h1, h2, h3, h4, h5, h6, p, div {
@@ -77,9 +80,7 @@ loadTranslations(route)
   }
 
   .ant-checkbox-indeterminate {
-    .ant-checkbox-inner {
-      background-color: transparent !important;
-    }
+    background-color: transparent !important;
   }
 
   .ant-layout-header {
@@ -95,6 +96,68 @@ loadTranslations(route)
       padding-bottom: 0;
     }
   }
+
+  // 暗夜模式滚动条样式
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #1a1a1a;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #3a3a3a;
+    border-radius: 4px;
+    transition: background 0.3s ease;
+
+    &:hover {
+      background: #4a4a4a;
+    }
+
+    &:active {
+      background: #555555;
+    }
+  }
+
+  // Firefox 滚动条样式
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a3a #1a1a1a;
+  }
+}
+
+// 浅色模式滚动条样式
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border-radius: 4px;
+  transition: background 0.3s ease;
+
+  &:hover {
+    background: #b0b0b0;
+  }
+
+  &:active {
+    background: #909090;
+  }
+}
+
+// Firefox 滚动条样式
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d0d0d0 #f0f0f0;
 }
 
 .ant-layout-header {

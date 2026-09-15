@@ -1,0 +1,14 @@
+#!/command/with-contenv sh
+
+if [ "${NGINX_UI_DISABLE_BUNDLED_NGINX:-}" = "true" ]; then
+    echo "Bundled Nginx is disabled; keeping the service idle"
+    exec sleep infinity
+fi
+
+if [ -n "${TZ}" ]; then
+    echo "Timezone: ${TZ}"
+    ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime && \
+    echo "${TZ}" > /etc/timezone
+fi
+
+nginx -g "daemon off;"

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import VueApexCharts from 'vue3-apexcharts'
+import type { Series } from '@/components/Chart/types'
 
 import { storeToRefs } from 'pinia'
+import VueApexCharts from 'vue3-apexcharts'
 import { useSettingsStore } from '@/pinia'
-import type { Series } from '@/components/Chart/types'
 
 const props = defineProps<{
   series: Series[] | number[]
@@ -17,7 +17,7 @@ const settings = useSettingsStore()
 
 const { theme } = storeToRefs(settings)
 
-const fontColor = () => {
+function fontColor() {
   return theme.value === 'dark' ? '#fcfcfc' : undefined
 }
 
@@ -73,9 +73,6 @@ const chartOptions = computed(() => ({
     :key="theme"
     class="radial-bar-container"
   >
-    <p class="bottom_text">
-      {{ bottomText }}
-    </p>
     <VueApexCharts
       v-if="centerText"
       class="radialBar"
@@ -84,38 +81,30 @@ const chartOptions = computed(() => ({
       :options="chartOptions"
       :series="series"
     />
+    <p class="bottom-text">
+      {{ bottomText }}
+    </p>
   </div>
 </template>
 
 <style lang="less" scoped>
 .radial-bar-container {
-  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   margin: 0 auto;
-  height: 112px !important;
 
   .radialBar {
-    position: absolute;
-    top: -30px;
-    @media (max-width: 1700px) and (min-width: 1200px) {
-      top: -30px;
-    }
-    @media (max-width: 768px) and (min-width: 290px) {
-      left: 50%;
-      transform: translateX(-50%);
-    }
+    // ApexCharts reserves ~41px of empty canvas above the ring and ~38px below
+    // it. Crop that dead space so the card stays compact without shrinking the
+    // ring itself.
+    margin-top: -35px;
+    margin-bottom: -23px;
   }
 
-  .text {
-    position: absolute;
-    width: 100%;
-    text-align: center;
-  }
-
-  .bottom_text {
-    position: absolute;
-    top: calc(106px);
+  .bottom-text {
+    margin: 0;
     font-weight: 600;
-    width: 100%;
     text-align: center;
   }
 }

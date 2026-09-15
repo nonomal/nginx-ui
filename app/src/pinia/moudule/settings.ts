@@ -1,24 +1,26 @@
-import { defineStore } from 'pinia'
+import gettext from '@/gettext'
 
 export const useSettingsStore = defineStore('settings', {
   state: () => ({
     language: '',
     theme: 'light',
     preference_theme: 'auto',
-    environment: {
+    node: {
       id: 0,
       name: 'Local',
     },
     server_name: '',
+    route_path: '',
   }),
   getters: {
     is_remote(): boolean {
-      return this.environment.id !== 0
+      return this.node.id !== 0
     },
   },
   actions: {
     set_language(lang: string) {
       this.language = lang
+      gettext.current = lang
     },
     set_theme(t: string) {
       this.theme = t
@@ -27,10 +29,20 @@ export const useSettingsStore = defineStore('settings', {
     set_preference_theme(t: string) {
       this.preference_theme = t
     },
-    clear_environment() {
-      this.environment.id = 0
-      this.environment.name = 'Local'
+    clear_node() {
+      this.node.id = 0
+      this.node.name = 'Local'
     },
   },
-  persist: true,
+  persist: [
+    {
+      key: `LOCAL_${window.name || 'main'}`,
+      storage: localStorage,
+      pick: ['node', 'server_name', 'route_path'],
+    },
+    {
+      storage: localStorage,
+      pick: ['language', 'theme', 'preference_theme'],
+    },
+  ],
 })

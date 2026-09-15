@@ -1,24 +1,19 @@
 import type { ModelBase } from '@/api/curd'
-import Curd from '@/api/curd'
-import http from '@/lib/http'
+import { extendCurdApi, http, useCurdApi } from '@uozi-admin/request'
 
 export interface AcmeUser extends ModelBase {
   name: string
   email: string
   ca_dir: string
   registration: { body?: { status: string } }
+  eab_key_id?: string
+  eab_hmac_key?: string
 }
 
-class ACMEUserCurd extends Curd<AcmeUser> {
-  constructor() {
-    super('acme_user', 'acme_users')
-  }
+const baseUrl = '/acme_users'
 
-  public async register(id: number) {
-    return http.post(`${this.baseUrl}/${id}/register`)
-  }
-}
-
-const acme_user = new ACMEUserCurd()
+const acme_user = extendCurdApi(useCurdApi<AcmeUser>(baseUrl), {
+  register: (id: number) => http.post(`${baseUrl}/${id}/register`),
+})
 
 export default acme_user

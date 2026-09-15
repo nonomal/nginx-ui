@@ -3,10 +3,13 @@ package user
 import (
 	"encoding/base64"
 	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/0xJacky/Nginx-UI/api"
 	"github.com/0xJacky/Nginx-UI/internal/cache"
-	"github.com/0xJacky/Nginx-UI/internal/cosy"
-	"github.com/0xJacky/Nginx-UI/internal/logger"
+	"github.com/0xJacky/Nginx-UI/internal/middleware"
 	"github.com/0xJacky/Nginx-UI/internal/passkey"
 	"github.com/0xJacky/Nginx-UI/internal/user"
 	"github.com/0xJacky/Nginx-UI/model"
@@ -15,16 +18,108 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"github.com/spf13/cast"
+	"github.com/uozi-tech/cosy"
+	"github.com/uozi-tech/cosy/logger"
 	"gorm.io/gorm"
-	"net/http"
-	"strings"
-	"time"
 )
 
 const passkeyTimeout = 30 * time.Second
+const currentPasswordHeader = "X-Current-Password"
 
-func buildCachePasskeyRegKey(id int) string {
+func buildCachePasskeyRegKey(id uint64) string {
 	return fmt.Sprintf("passkey-reg-%d", id)
+}
+
+type passkeyPreAuthSession struct {
+	UserID      uint64
+	SessionData *webauthn.SessionData
+}
+
+func buildPasskeyPreAuthKey(id string) string {
+	return "passkey-preauth-" + id
+}
+
+func beginPasskeyPreAuthentication(c *gin.Context, currentUser *model.User) {
+	if !passkey.Enabled() {
+		cosy.ErrHandler(c, user.ErrWebAuthnNotConfigured)
+		return
+	}
+	options, sessionData, err := passkey.GetInstance().BeginLogin(currentUser)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+	preAuthID := uuid.NewString()
+	cache.Set(buildPasskeyPreAuthKey(preAuthID), &passkeyPreAuthSession{
+		UserID:      currentUser.ID,
+		SessionData: sessionData,
+	}, passkeyTimeout)
+	c.JSON(http.StatusOK, LoginResponse{
+		Code:      PasskeyRequired,
+		Message:   "Passkey verification is required",
+		PreAuthID: preAuthID,
+		Options:   options,
+	})
+}
+
+func FinishPasskeyPreAuthentication(c *gin.Context) {
+	if !passkey.Enabled() {
+		cosy.ErrHandler(c, user.ErrWebAuthnNotConfigured)
+		return
+	}
+	preAuthID := strings.TrimSpace(c.GetHeader("X-Passkey-Pre-Auth-ID"))
+	session, ok := takePasskeyPreAuthSession(preAuthID)
+	if !ok {
+		cosy.ErrHandler(c, user.ErrSessionNotFound)
+		return
+	}
+	userQuery := query.User
+	currentUser, err := userQuery.FirstByID(session.UserID)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+	credential, err := passkey.GetInstance().FinishLogin(currentUser, *session.SessionData, c.Request)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+	rawID := strings.TrimRight(base64.StdEncoding.EncodeToString(credential.ID), "=")
+	passkeyQuery := query.Passkey
+	_, _ = passkeyQuery.Where(
+		passkeyQuery.UserID.Eq(currentUser.ID),
+		passkeyQuery.RawID.Eq(rawID),
+	).Updates(&model.Passkey{LastUsedAt: time.Now().Unix()})
+
+	token, err := user.IssueLoginToken(currentUser, user.LoginProofPasskey)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+	banIPQuery := query.BanIP
+	_, _ = banIPQuery.Where(banIPQuery.IP.Eq(c.ClientIP())).Delete()
+	secureSessionID := user.SetSecureSessionID(currentUser.ID)
+	middleware.EnsureSecureSessionCookie(c)
+	c.JSON(http.StatusOK, LoginResponse{
+		Code:               LoginSuccess,
+		Message:            "ok",
+		AccessTokenPayload: token,
+		SecureSessionID:    secureSessionID,
+		SecureSessionTTL:   int(user.SecureSessionDuration().Seconds()),
+	})
+}
+
+func takePasskeyPreAuthSession(preAuthID string) (*passkeyPreAuthSession, bool) {
+	if preAuthID == "" {
+		return nil, false
+	}
+	key := buildPasskeyPreAuthKey(preAuthID)
+	sessionValue, ok := cache.Take(key)
+	if !ok {
+		return nil, false
+	}
+	session, ok := sessionValue.(*passkeyPreAuthSession)
+	return session, ok && session != nil && session.SessionData != nil
 }
 
 func GetPasskeyConfigStatus(c *gin.Context) {
@@ -34,37 +129,39 @@ func GetPasskeyConfigStatus(c *gin.Context) {
 }
 
 func BeginPasskeyRegistration(c *gin.Context) {
+	if !verifyCurrentPassword(c, c.GetHeader(currentPasswordHeader)) {
+		return
+	}
+
 	u := api.CurrentUser(c)
 
 	webauthnInstance := passkey.GetInstance()
 
 	options, sessionData, err := webauthnInstance.BeginRegistration(u)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	cache.Set(buildCachePasskeyRegKey(u.ID), sessionData, passkeyTimeout)
 
-	c.JSON(http.StatusOK, options)
+	c.JSON(http.StatusOK, options.Response)
 }
 
 func FinishPasskeyRegistration(c *gin.Context) {
 	cUser := api.CurrentUser(c)
 	webauthnInstance := passkey.GetInstance()
-	sessionDataBytes, ok := cache.Get(buildCachePasskeyRegKey(cUser.ID))
+	sessionDataBytes, ok := cache.Take(buildCachePasskeyRegKey(cUser.ID))
 	if !ok {
-		api.ErrHandler(c, fmt.Errorf("session not found"))
+		cosy.ErrHandler(c, user.ErrSessionNotFound)
 		return
 	}
 
 	sessionData := sessionDataBytes.(*webauthn.SessionData)
 	credential, err := webauthnInstance.FinishRegistration(cUser, *sessionData, c.Request)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
-	cache.Del(buildCachePasskeyRegKey(cUser.ID))
-
 	rawId := strings.TrimRight(base64.StdEncoding.EncodeToString(credential.ID), "=")
 	passkeyName := c.Query("name")
 	p := query.Passkey
@@ -76,7 +173,7 @@ func FinishPasskeyRegistration(c *gin.Context) {
 		LastUsedAt: time.Now().Unix(),
 	})
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
@@ -87,13 +184,13 @@ func FinishPasskeyRegistration(c *gin.Context) {
 
 func BeginPasskeyLogin(c *gin.Context) {
 	if !passkey.Enabled() {
-		api.ErrHandler(c, fmt.Errorf("WebAuthn settings are not configured"))
+		cosy.ErrHandler(c, user.ErrWebAuthnNotConfigured)
 		return
 	}
 	webauthnInstance := passkey.GetInstance()
 	options, sessionData, err := webauthnInstance.BeginDiscoverableLogin()
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	sessionID := uuid.NewString()
@@ -107,13 +204,13 @@ func BeginPasskeyLogin(c *gin.Context) {
 
 func FinishPasskeyLogin(c *gin.Context) {
 	if !passkey.Enabled() {
-		api.ErrHandler(c, fmt.Errorf("WebAuthn settings are not configured"))
+		cosy.ErrHandler(c, user.ErrWebAuthnNotConfigured)
 		return
 	}
 	sessionId := c.GetHeader("X-Passkey-Session-ID")
-	sessionDataBytes, ok := cache.Get(sessionId)
+	sessionDataBytes, ok := cache.Take(sessionId)
 	if !ok {
-		api.ErrHandler(c, fmt.Errorf("session not found"))
+		cosy.ErrHandler(c, user.ErrSessionNotFound)
 		return
 	}
 	webauthnInstance := passkey.GetInstance()
@@ -130,11 +227,11 @@ func FinishPasskeyLogin(c *gin.Context) {
 				LastUsedAt: time.Now().Unix(),
 			})
 
-			outUser, err = u.FirstByID(cast.ToInt(string(userHandle)))
+			outUser, err = u.FirstByID(cast.ToUint64(string(userHandle)))
 			return outUser, err
 		}, *sessionData, c.Request)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
@@ -144,7 +241,7 @@ func FinishPasskeyLogin(c *gin.Context) {
 	_, _ = b.Where(b.IP.Eq(clientIP)).Delete()
 
 	logger.Info("[User Login]", outUser.Name)
-	token, err := user.GenerateJWT(outUser)
+	token, err := user.IssueLoginToken(outUser, user.LoginProofPasskey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, LoginResponse{
 			Message: err.Error(),
@@ -152,11 +249,16 @@ func FinishPasskeyLogin(c *gin.Context) {
 		return
 	}
 
+	secureSessionID := user.SetSecureSessionID(outUser.ID)
+
+	middleware.EnsureSecureSessionCookie(c)
+
 	c.JSON(http.StatusOK, LoginResponse{
-		Code:    LoginSuccess,
-		Message: "ok",
-		Token:   token,
-		// SecureSessionID: secureSessionID,
+		Code:               LoginSuccess,
+		Message:            "ok",
+		AccessTokenPayload: token,
+		SecureSessionID:    secureSessionID,
+		SecureSessionTTL:   int(user.SecureSessionDuration().Seconds()),
 	})
 }
 
@@ -165,7 +267,7 @@ func GetPasskeyList(c *gin.Context) {
 	p := query.Passkey
 	passkeys, err := p.Where(p.UserID.Eq(u.ID)).Find()
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 

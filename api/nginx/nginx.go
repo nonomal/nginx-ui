@@ -1,20 +1,21 @@
 package nginx
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
+	"net/http"
+
 	"github.com/0xJacky/Nginx-UI/internal/nginx"
 	"github.com/gin-gonic/gin"
-	"net/http"
+	"github.com/uozi-tech/cosy"
 )
 
 func BuildNginxConfig(c *gin.Context) {
 	var ngxConf nginx.NgxConfig
-	if !api.BindAndValid(c, &ngxConf) {
+	if !cosy.BindAndValid(c, &ngxConf) {
 		return
 	}
 	content, err := ngxConf.BuildConfig()
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -27,30 +28,29 @@ func TokenizeNginxConfig(c *gin.Context) {
 		Content string `json:"content" binding:"required"`
 	}
 
-	if !api.BindAndValid(c, &json) {
+	if !cosy.BindAndValid(c, &json) {
 		return
 	}
 
 	ngxConfig, err := nginx.ParseNgxConfigByContent(json.Content)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, ngxConfig)
-
 }
 
 func FormatNginxConfig(c *gin.Context) {
 	var json struct {
-		Content string `json:"content" binding:"required"`
+		Content string `json:"content"`
 	}
 
-	if !api.BindAndValid(c, &json) {
+	if !cosy.BindAndValid(c, &json) {
 		return
 	}
 	content, err := nginx.FmtCode(json.Content)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

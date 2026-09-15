@@ -1,22 +1,22 @@
 package certificate
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
-	"github.com/0xJacky/Nginx-UI/internal/cosy"
+	"net/http"
+
 	"github.com/0xJacky/Nginx-UI/model"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/0xJacky/Nginx-UI/settings"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cast"
-	"net/http"
+	"github.com/uozi-tech/cosy"
 )
 
 func GetAcmeUser(c *gin.Context) {
 	u := query.AcmeUser
-	id := cast.ToInt(c.Param("id"))
+	id := cast.ToUint64(c.Param("id"))
 	user, err := u.FirstByID(id)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, user)
@@ -29,9 +29,11 @@ func CreateAcmeUser(c *gin.Context) {
 		"ca_dir":              "omitempty",
 		"proxy":               "omitempty",
 		"register_on_startup": "omitempty",
+		"eab_key_id":          "omitempty",
+		"eab_hmac_key":        "omitempty",
 	}).BeforeExecuteHook(func(ctx *cosy.Ctx[model.AcmeUser]) {
 		if ctx.Model.CADir == "" {
-			ctx.Model.CADir = settings.ServerSettings.GetCADir()
+			ctx.Model.CADir = settings.CertSettings.GetCADir()
 		}
 		err := ctx.Model.Register()
 		if err != nil {
@@ -48,9 +50,11 @@ func ModifyAcmeUser(c *gin.Context) {
 		"ca_dir":              "omitempty",
 		"proxy":               "omitempty",
 		"register_on_startup": "omitempty",
+		"eab_key_id":          "omitempty",
+		"eab_hmac_key":        "omitempty",
 	}).BeforeExecuteHook(func(ctx *cosy.Ctx[model.AcmeUser]) {
 		if ctx.Model.CADir == "" {
-			ctx.Model.CADir = settings.ServerSettings.GetCADir()
+			ctx.Model.CADir = settings.CertSettings.GetCADir()
 		}
 
 		if ctx.OriginModel.Email != ctx.Model.Email ||
@@ -79,21 +83,21 @@ func RecoverAcmeUser(c *gin.Context) {
 }
 
 func RegisterAcmeUser(c *gin.Context) {
-	id := cast.ToInt(c.Param("id"))
+	id := cast.ToUint64(c.Param("id"))
 	u := query.AcmeUser
 	user, err := u.FirstByID(id)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	err = user.Register()
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	_, err = u.Where(u.ID.Eq(id)).Updates(user)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, user)

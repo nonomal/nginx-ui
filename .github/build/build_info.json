@@ -5,10 +5,24 @@
         "arm5": {"arch": "arm", "abi": "eabi", "name": "linux-arm32-v5"},
         "arm6": {"arch": "armv5l", "abi": "eabihf", "name": "linux-arm32-v6"},
         "arm7": {"arch": "armv7l", "abi": "eabihf", "name": "linux-arm32-v7a"},
-        "arm64": {"arch": "aarch64", "name": "linux-arm64-v8a"}
+        "arm64": {"arch": "aarch64", "name": "linux-arm64-v8a"},
+        "loong64": {"arch": "loongarch64", "name": "linux-loong64"},
+        "riscv64": {"arch": "riscv64", "name": "linux-riscv64"},
+        "mips64le": { "arch": "mips64el", "name": "linux-mips64le" },
+        "mips64": { "arch": "mips64", "name": "linux-mips64" },
+        "mipsle": { "arch": "mipsel", "name": "linux-mips32le" },
+        "mips": { "arch": "mips", "name": "linux-mips32" }
     },
     "darwin": {
         "amd64": {"arch": "o64", "name": "macos-64"},
         "arm64": {"arch": "oa64", "name": "macos-arm64-v8a"}
+    },
+    "windows": {
+        "386": {"arch": "i686", "name": "windows-32"},
+        "amd64": {"arch": "x86_64", "name": "windows-64"},
+        "arm64": {"arch": "aarch64", "name": "windows-arm64-v8a"}
+    },
+    "termux": {
+        "arm64": {"arch": "aarch64", "name": "termux-arm64-v8a"}
     }
 }

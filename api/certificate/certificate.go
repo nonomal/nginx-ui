@@ -1,26 +1,29 @@
 package certificate
 
 import (
-	"github.com/0xJacky/Nginx-UI/api"
+	"net/http"
+	"path/filepath"
+
 	"github.com/0xJacky/Nginx-UI/internal/cert"
-	"github.com/0xJacky/Nginx-UI/internal/cosy"
 	"github.com/0xJacky/Nginx-UI/internal/helper"
 	"github.com/0xJacky/Nginx-UI/internal/nginx"
 	"github.com/0xJacky/Nginx-UI/internal/notification"
+	"github.com/0xJacky/Nginx-UI/internal/site"
 	"github.com/0xJacky/Nginx-UI/model"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/gin-gonic/gin"
-	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v5/certcrypto"
 	"github.com/spf13/cast"
-	"net/http"
-	"os"
+	"github.com/uozi-tech/cosy"
+	"github.com/uozi-tech/cosy/logger"
 )
 
 type APICertificate struct {
 	*model.Cert
-	SSLCertificate    string     `json:"ssl_certificate,omitempty"`
-	SSLCertificateKey string     `json:"ssl_certificate_key,omitempty"`
-	CertificateInfo   *cert.Info `json:"certificate_info,omitempty"`
+	SSLCertificate    string                           `json:"ssl_certificate,omitempty"`
+	SSLCertificateKey string                           `json:"ssl_certificate_key,omitempty"`
+	CertificateInfo   *cert.Info                       `json:"certificate_info,omitempty"`
+	DeploymentStatus  site.CertificateDeploymentStatus `json:"deployment_status"`
 }
 
 func Transformer(certModel *model.Cert) (certificate *APICertificate) {
@@ -28,8 +31,8 @@ func Transformer(certModel *model.Cert) (certificate *APICertificate) {
 	var certificateInfo *cert.Info
 	if certModel.SSLCertificatePath != "" &&
 		helper.IsUnderDirectory(certModel.SSLCertificatePath, nginx.GetConfPath()) {
-		if _, err := os.Stat(certModel.SSLCertificatePath); err == nil {
-			sslCertificationBytes, _ = os.ReadFile(certModel.SSLCertificatePath)
+		if _, err := nginx.Stat(certModel.SSLCertificatePath); err == nil {
+			sslCertificationBytes, _ = nginx.ReadFile(certModel.SSLCertificatePath)
 			if !cert.IsCertificate(string(sslCertificationBytes)) {
 				sslCertificationBytes = []byte{}
 			}
@@ -40,8 +43,8 @@ func Transformer(certModel *model.Cert) (certificate *APICertificate) {
 
 	if certModel.SSLCertificateKeyPath != "" &&
 		helper.IsUnderDirectory(certModel.SSLCertificateKeyPath, nginx.GetConfPath()) {
-		if _, err := os.Stat(certModel.SSLCertificateKeyPath); err == nil {
-			sslCertificationKeyBytes, _ = os.ReadFile(certModel.SSLCertificateKeyPath)
+		if _, err := nginx.Stat(certModel.SSLCertificateKeyPath); err == nil {
+			sslCertificationKeyBytes, _ = nginx.ReadFile(certModel.SSLCertificateKeyPath)
 			if !cert.IsPrivateKey(string(sslCertificationKeyBytes)) {
 				sslCertificationKeyBytes = []byte{}
 			}
@@ -53,172 +56,288 @@ func Transformer(certModel *model.Cert) (certificate *APICertificate) {
 		SSLCertificate:    string(sslCertificationBytes),
 		SSLCertificateKey: string(sslCertificationKeyBytes),
 		CertificateInfo:   certificateInfo,
+		DeploymentStatus:  site.InspectCertificateDeployment(certModel),
 	}
 }
 
 func GetCertList(c *gin.Context) {
-	cosy.Core[model.Cert](c).SetFussy("name", "domain").SetTransformer(func(m *model.Cert) any {
-
-		info, _ := cert.GetCertInfo(m.SSLCertificatePath)
-
-		return APICertificate{
-			Cert:            m,
-			CertificateInfo: info,
-		}
-	}).PagingList()
+	s := logger.NewSessionLogger(c)
+	s.Info("GetCertList")
+	cosy.Core[model.Cert](c).SetFussy("name", "domain").
+		SetTransformer(func(m *model.Cert) any {
+			info, _ := cert.GetCertInfo(m.SSLCertificatePath)
+			return APICertificate{
+				Cert:             m,
+				CertificateInfo:  info,
+				DeploymentStatus: site.InspectCertificateDeployment(m),
+			}
+		}).PagingList()
 }
 
 func GetCert(c *gin.Context) {
 	q := query.Cert
 
-	certModel, err := q.FirstByID(cast.ToInt(c.Param("id")))
+	id := cast.ToUint64(c.Param("id"))
+	if contextId, ok := c.Get("id"); ok {
+		id = cast.ToUint64(contextId)
+	}
+
+	certModel, err := q.FirstByID(id)
 
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, Transformer(certModel))
 }
 
-type certJson struct {
-	Name                  string             `json:"name" binding:"required"`
-	SSLCertificatePath    string             `json:"ssl_certificate_path" binding:"required,certificate_path"`
-	SSLCertificateKeyPath string             `json:"ssl_certificate_key_path" binding:"required,privatekey_path"`
-	SSLCertificate        string             `json:"ssl_certificate" binding:"omitempty,certificate"`
-	SSLCertificateKey     string             `json:"ssl_certificate_key" binding:"omitempty,privatekey"`
-	KeyType               certcrypto.KeyType `json:"key_type" binding:"omitempty,auto_cert_key_type"`
-	ChallengeMethod       string             `json:"challenge_method"`
-	DnsCredentialID       int                `json:"dns_credential_id"`
-	ACMEUserID            int                `json:"acme_user_id"`
-	SyncNodeIds           []int              `json:"sync_node_ids"`
+func normalizeCertKeyType(ctx *cosy.Ctx[model.Cert]) {
+	payloadKeyType := cast.ToString(ctx.Payload["key_type"])
+	if payloadKeyType != "" {
+		ctx.Model.KeyType = helper.GetKeyType(certcrypto.KeyType(payloadKeyType))
+	}
+
+	sslCertificate := cast.ToString(ctx.Payload["ssl_certificate"])
+	if sslCertificate == "" {
+		return
+	}
+
+	keyType, err := cert.GetKeyType(sslCertificate)
+	if err == nil && keyType != "" {
+		ctx.Model.KeyType = helper.GetKeyType(certcrypto.KeyType(keyType))
+	}
 }
 
 func AddCert(c *gin.Context) {
-	var json certJson
-
-	if !api.BindAndValid(c, &json) {
-		return
-	}
-
-	certModel := &model.Cert{
-		Name:                  json.Name,
-		SSLCertificatePath:    json.SSLCertificatePath,
-		SSLCertificateKeyPath: json.SSLCertificateKeyPath,
-		KeyType:               json.KeyType,
-		ChallengeMethod:       json.ChallengeMethod,
-		DnsCredentialID:       json.DnsCredentialID,
-		ACMEUserID:            json.ACMEUserID,
-		SyncNodeIds:           json.SyncNodeIds,
-	}
-
-	err := certModel.Insert()
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	content := &cert.Content{
-		SSLCertificatePath:    json.SSLCertificatePath,
-		SSLCertificateKeyPath: json.SSLCertificateKeyPath,
-		SSLCertificate:        json.SSLCertificate,
-		SSLCertificateKey:     json.SSLCertificateKey,
-	}
-
-	err = content.WriteFile()
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	err = cert.SyncToRemoteServer(certModel)
-	if err != nil {
-		notification.Error("Sync Certificate Error", err.Error())
-		return
-	}
-
-	c.JSON(http.StatusOK, Transformer(certModel))
+	cosy.Core[model.Cert](c).
+		SetValidRules(gin.H{
+			"name":                                 "omitempty",
+			"ssl_certificate_path":                 "required,certificate_path",
+			"ssl_certificate_key_path":             "required,privatekey_path",
+			"ssl_certificate":                      "omitempty,certificate",
+			"ssl_certificate_key":                  "omitempty,privatekey",
+			"key_type":                             "omitempty,auto_cert_key_type",
+			"challenge_method":                     "omitempty,oneof=http01 dns01",
+			"profile":                              "omitempty",
+			"dns_credential_id":                    "omitempty",
+			"acme_user_id":                         "omitempty",
+			"sync_node_ids":                        "omitempty",
+			"must_staple":                          "omitempty",
+			"lego_disable_cname_support":           "omitempty",
+			"disable_authoritative_ns_propagation": "omitempty",
+			"enable_common_name":                   "omitempty",
+			"revoke_old":                           "omitempty",
+		}).
+		BeforeExecuteHook(func(ctx *cosy.Ctx[model.Cert]) {
+			normalizeCertKeyType(ctx)
+		}).
+		ExecutedHook(func(ctx *cosy.Ctx[model.Cert]) {
+			sslCertificate := cast.ToString(ctx.Payload["ssl_certificate"])
+			sslCertificateKey := cast.ToString(ctx.Payload["ssl_certificate_key"])
+			if sslCertificate != "" && sslCertificateKey != "" {
+				content := &cert.Content{
+					SSLCertificatePath:    ctx.Model.SSLCertificatePath,
+					SSLCertificateKeyPath: ctx.Model.SSLCertificateKeyPath,
+					SSLCertificate:        sslCertificate,
+					SSLCertificateKey:     sslCertificateKey,
+				}
+				err := content.WriteFile()
+				if err != nil {
+					ctx.AbortWithError(err)
+					return
+				}
+			}
+			persistCertificateFingerprint(&ctx.Model)
+			err := cert.SyncToRemoteServer(&ctx.Model)
+			if err != nil {
+				notification.Error("Sync Certificate Error", err.Error(), nil)
+				return
+			}
+			ctx.Context.Set("id", ctx.Model.ID)
+		}).
+		SetNextHandler(GetCert).
+		Create()
 }
 
 func ModifyCert(c *gin.Context) {
-	id := cast.ToInt(c.Param("id"))
+	cosy.Core[model.Cert](c).
+		SetValidRules(gin.H{
+			"name":                                 "omitempty",
+			"ssl_certificate_path":                 "required,certificate_path",
+			"ssl_certificate_key_path":             "required,privatekey_path",
+			"ssl_certificate":                      "omitempty,certificate",
+			"ssl_certificate_key":                  "omitempty,privatekey",
+			"key_type":                             "omitempty,auto_cert_key_type",
+			"challenge_method":                     "omitempty,oneof=http01 dns01",
+			"profile":                              "omitempty",
+			"dns_credential_id":                    "omitempty",
+			"acme_user_id":                         "omitempty",
+			"sync_node_ids":                        "omitempty",
+			"must_staple":                          "omitempty",
+			"lego_disable_cname_support":           "omitempty",
+			"disable_authoritative_ns_propagation": "omitempty",
+			"enable_common_name":                   "omitempty",
+			"revoke_old":                           "omitempty",
+		}).
+		BeforeExecuteHook(func(ctx *cosy.Ctx[model.Cert]) {
+			normalizeCertKeyType(ctx)
+		}).
+		ExecutedHook(func(ctx *cosy.Ctx[model.Cert]) {
+			sslCertificate := cast.ToString(ctx.Payload["ssl_certificate"])
+			sslCertificateKey := cast.ToString(ctx.Payload["ssl_certificate_key"])
 
-	var json certJson
-
-	if !api.BindAndValid(c, &json) {
-		return
-	}
-
-	q := query.Cert
-
-	certModel, err := q.FirstByID(id)
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	err = certModel.Updates(&model.Cert{
-		Name:                  json.Name,
-		SSLCertificatePath:    json.SSLCertificatePath,
-		SSLCertificateKeyPath: json.SSLCertificateKeyPath,
-		ChallengeMethod:       json.ChallengeMethod,
-		KeyType:               json.KeyType,
-		DnsCredentialID:       json.DnsCredentialID,
-		ACMEUserID:            json.ACMEUserID,
-		SyncNodeIds:           json.SyncNodeIds,
-	})
-
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	content := &cert.Content{
-		SSLCertificatePath:    json.SSLCertificatePath,
-		SSLCertificateKeyPath: json.SSLCertificateKeyPath,
-		SSLCertificate:        json.SSLCertificate,
-		SSLCertificateKey:     json.SSLCertificateKey,
-	}
-
-	err = content.WriteFile()
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	err = cert.SyncToRemoteServer(certModel)
-	if err != nil {
-		notification.Error("Sync Certificate Error", err.Error())
-		return
-	}
-
-	GetCert(c)
+			content := &cert.Content{
+				SSLCertificatePath:    ctx.Model.SSLCertificatePath,
+				SSLCertificateKeyPath: ctx.Model.SSLCertificateKeyPath,
+				SSLCertificate:        sslCertificate,
+				SSLCertificateKey:     sslCertificateKey,
+			}
+			err := content.WriteFile()
+			if err != nil {
+				ctx.AbortWithError(err)
+				return
+			}
+			persistCertificateFingerprint(&ctx.Model)
+			err = cert.SyncToRemoteServer(&ctx.Model)
+			if err != nil {
+				notification.Error("Sync Certificate Error", err.Error(), nil)
+				return
+			}
+		}).
+		SetNextHandler(GetCert).
+		Modify()
 }
 
 func RemoveCert(c *gin.Context) {
-	cosy.Core[model.Cert](c).Destroy()
+	id := cast.ToUint64(c.Param("id"))
+	certModel, err := query.Cert.FirstByID(id)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+
+	if err = query.Cert.DeleteByID(id); err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+
+	cleanupSelfSignedCertFiles(certModel)
+}
+
+func ImportExistingCert(c *gin.Context) {
+	var json cert.ImportCertificateOptions
+
+	if !cosy.BindAndValid(c, &json) {
+		return
+	}
+
+	certModel, err := cert.ImportExistingCertificate(json)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+
+	response := Transformer(certModel)
+	if info, err := cert.ValidateCertificateAndKey(certModel.SSLCertificatePath, certModel.SSLCertificateKeyPath); err == nil {
+		response.CertificateInfo = info
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+func DiscoverNewCerts(c *gin.Context) {
+	var json struct {
+		NewOnly *bool `json:"new_only"`
+	}
+
+	if !cosy.BindAndValid(c, &json) {
+		return
+	}
+
+	newOnly := true
+	if json.NewOnly != nil {
+		newOnly = *json.NewOnly
+	}
+
+	pairs, err := cert.ScanCertificateSSLDirectory(newOnly)
+	if err != nil {
+		cosy.ErrHandler(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"candidates": pairs,
+	})
+}
+
+func persistCertificateFingerprint(certModel *model.Cert) {
+	if certModel == nil || certModel.SSLCertificatePath == "" {
+		return
+	}
+
+	fingerprint, err := cert.CertificateFingerprintFromPath(certModel.SSLCertificatePath)
+	if err != nil {
+		logger.Debug("certificate fingerprint unavailable", "path", certModel.SSLCertificatePath, "error", err)
+		return
+	}
+
+	certModel.Fingerprint = fingerprint
+	if certModel.ID == 0 {
+		return
+	}
+
+	if err = model.UseDB().Model(certModel).Update("fingerprint", fingerprint).Error; err != nil {
+		logger.Debug("persist certificate fingerprint failed", "id", certModel.ID, "error", err)
+	}
+}
+
+func cleanupSelfSignedCertFiles(certModel *model.Cert) {
+	if certModel.AutoCert != model.AutoCertSelfSigned {
+		return
+	}
+
+	certPath := certModel.SSLCertificatePath
+	keyPath := certModel.SSLCertificateKeyPath
+	sslDir := nginx.GetConfPath("ssl")
+	certDir := filepath.Dir(certPath)
+	keyDir := filepath.Dir(keyPath)
+	if certDir == "." || certDir != keyDir {
+		return
+	}
+	if !helper.IsUnderDirectory(certPath, sslDir) || !helper.IsUnderDirectory(keyPath, sslDir) || !helper.IsUnderDirectory(certDir, sslDir) {
+		return
+	}
+	if err := nginx.RemoveAll(certDir); err != nil {
+		logger.Errorf("self-signed cert directory cleanup failed for id %d at %s: %v", certModel.ID, certDir, err)
+	}
 }
 
 func SyncCertificate(c *gin.Context) {
 	var json cert.SyncCertificatePayload
 
-	if !api.BindAndValid(c, &json) {
+	if !cosy.BindAndValid(c, &json) {
 		return
 	}
+	normalizedKeyType := helper.GetKeyType(json.KeyType)
 
 	certModel := &model.Cert{
 		Name:                  json.Name,
 		SSLCertificatePath:    json.SSLCertificatePath,
 		SSLCertificateKeyPath: json.SSLCertificateKeyPath,
-		KeyType:               json.KeyType,
+		KeyType:               normalizedKeyType,
 		AutoCert:              model.AutoCertSync,
 	}
 
 	db := model.UseDB()
 
-	err := db.Where(certModel).FirstOrCreate(certModel).Error
+	err := db.Where("name = ? AND ssl_certificate_path = ? AND ssl_certificate_key_path = ? AND key_type IN ?",
+		json.Name, json.SSLCertificatePath, json.SSLCertificateKeyPath,
+		helper.GetKeyTypeAliasStrings(normalizedKeyType)).
+		Assign(&model.Cert{KeyType: normalizedKeyType}).
+		FirstOrCreate(certModel).Error
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
 
@@ -231,9 +350,10 @@ func SyncCertificate(c *gin.Context) {
 
 	err = content.WriteFile()
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
 	}
+	persistCertificateFingerprint(certModel)
 
 	nginx.Reload()
 

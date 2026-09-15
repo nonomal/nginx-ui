@@ -1,0 +1,37 @@
+import type { AxiosRequestConfig } from 'axios'
+
+// server response
+export interface CosyError {
+  httpStatus?: number
+  scope?: string
+  code: string | number
+  message: string
+  params?: string[]
+}
+
+// code, message translation
+export type CosyErrorRecord = Record<number, () => string>
+
+export interface HttpConfig extends AxiosRequestConfig {
+  returnFullResponse?: boolean
+  crypto?: boolean
+  skipAuthRedirect?: boolean
+  skipErrHandling?: boolean
+}
+
+// Extend InternalAxiosRequestConfig type
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    returnFullResponse?: boolean
+    crypto?: boolean
+    skipAuthRedirect?: boolean
+    skipErrHandling?: boolean
+    // Internal markers used by interceptors to safely retry a request after
+    // a 2FA step-up challenge. Only FormData (the restore-backup endpoint)
+    // is snapshotted — JSON callers with `crypto: true` are all pre-auth
+    // and never reach the secure-session retry path, so we don't keep a
+    // plaintext copy of those payloads on the request config.
+    _preEncryptionFormData?: FormData
+    _retriedAfter2FA?: boolean
+  }
+}

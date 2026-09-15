@@ -19,8 +19,8 @@ You should execute the following command to update browser list database before 
 Please execute the following command in `app` directory.
 
 ```shell
-pnpm install
-pnpm build
+bun install
+bun run build
 ```
 
 ## Build Backend
@@ -32,5 +32,6 @@ Before building the backend, the app should be built first because the backend w
 Please execute the following command in the project root directory.
 
 ```shell
+go generate
 go build -tags=jsoniter -ldflags "$LD_FLAGS -X 'github.com/0xJacky/Nginx-UI/settings.buildTime=$(date +%s)'" -o nginx-ui -v main.go
 ```

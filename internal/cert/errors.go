@@ -1,0 +1,68 @@
+package cert
+
+import "github.com/uozi-tech/cosy"
+
+var (
+	e                                    = cosy.NewErrorScope("cert")
+	ErrCertModelFilenameEmpty            = e.New(50001, "filename is empty")
+	ErrCertPathIsNotUnderTheNginxConfDir = e.New(50002, "cert path is not under the nginx conf dir")
+	ErrCertDecode                        = e.New(50003, "certificate decode error")
+	ErrCertParse                         = e.New(50004, "certificate parse error")
+	ErrPayloadResourceIsNil              = e.New(50005, "payload resource is nil")
+	ErrPathIsNotUnderTheNginxConfDir     = e.New(50006, "path: {0} is not under the nginx conf dir: {1}")
+	ErrCertPathIsEmpty                   = e.New(50007, "certificate path is empty")
+	ErrGetACMEUser                       = e.New(50008, "get acme user error: {0}")
+	ErrNewTransport                      = e.New(50009, "new transport error: {0}")
+	ErrNewLegoClient                     = e.New(50010, "new lego client error: {0}")
+	ErrGetDNSCredential                  = e.New(50011, "get dns credential error: {0}")
+	ErrProviderNotFound                  = e.New(50012, "provider not found: {0}")
+	ErrSetEnv                            = e.New(50013, "set env error: {0}")
+	ErrNewDNSChallengeProvider           = e.New(50014, "new dns challenge provider error: {0}")
+	ErrEnvironmentConfigurationIsEmpty   = e.New(50015, "environment configuration is empty")
+	ErrChallengeError                    = e.New(50016, "challenge error: {0}")
+	ErrSetEnvFlagToDisableLegoCNAME      = e.New(50017, "set env flag to disable lego CNAME support error: {0}")
+	ErrRenewCert                         = e.New(50018, "renew cert error: {0}")
+	ErrMakeCertificateDir                = e.New(50019, "make certificate dir error: {0}")
+	ErrWriteFullchainCer                 = e.New(50020, "write fullchain.cer error: {0}")
+	ErrWritePrivateKey                   = e.New(50021, "write private.key error: {0}")
+	ErrObtainCert                        = e.New(50022, "obtain cert error: {0}")
+	ErrRevokeCert                        = e.New(50023, "revoke cert error: {0}")
+	ErrNoCertificateAvailable            = e.New(50031, "no certificate available")
+	ErrSelfSignedGenerateKey             = e.New(50032, "generate self-signed private key error: {0}")
+	ErrSelfSignedCreateCert              = e.New(50033, "create self-signed certificate error: {0}")
+	ErrSelfSignedNoSAN                   = e.New(50034, "at least one domain or IP address is required")
+	ErrSelfSignedInvalidIP               = e.New(50035, "invalid IP address: {0}")
+	ErrCertIsNotSelfSigned               = e.New(50036, "certificate is not a self-signed certificate")
+	ErrCertificateNameRequired           = e.New(50037, "certificate name is required")
+	ErrDatabaseNotInitialized            = e.New(50038, "database is not initialized")
+	ErrInvalidKeyType                    = e.New(50039, "invalid key type: {0}")
+	ErrReadCertificateDirectory          = e.New(50040, "read certificate directory {0}: {1}")
+	ErrCertificateDirectoryNotDirectory  = e.New(50041, "certificate directory {0} is not a directory")
+	ErrNoCertificateOrKeyCandidates      = e.New(50042, "no certificate or private key candidates found in {0}")
+	ErrNoValidCertificateCandidates      = e.New(50043, "no valid certificate candidates found in {0}")
+	ErrNoValidPrivateKeyCandidates       = e.New(50044, "no valid private key candidates found in {0}")
+	ErrReadCertificate                   = e.New(50045, "read certificate {0}: {1}")
+	ErrInvalidCertificate                = e.New(50046, "invalid certificate {0}: {1}")
+	ErrReadPrivateKey                    = e.New(50047, "read private key {0}: {1}")
+	ErrInvalidPrivateKey                 = e.New(50048, "invalid private key {0}")
+	ErrCertificateKeyMismatch            = e.New(50049, "certificate and private key do not match: {0}")
+	ErrCertificateFieldRequired          = e.New(50050, "{0} is required")
+	ErrCertificatePathsRequired          = e.New(50051, "provide both --cert and --key")
+	ErrInvalidCertificateIdentifier      = e.New(50052, "invalid certificate identifier: {0}")
+	ErrIPCertificateRequiresHTTP01       = e.New(50053, "IP address certificates require the HTTP-01 challenge")
+	ErrCertificateProfileUnavailable     = e.New(50054, "certificate profile is not available from the selected ACME server: {0}")
+	ErrWildcardIPCertificateConflict     = e.New(50055, "wildcard domains and IP addresses cannot be requested in the same certificate")
+	ErrPersistCertificateRecord          = e.New(50056, "persist certificate record error: {0}")
+)
+
+func NewInvalidKeyTypeError(keyType string) error {
+	return e.NewWithParams(50039, ErrInvalidKeyType.Error(), keyType)
+}
+
+func NewInvalidCertificateIdentifierError(identifier string) error {
+	return e.NewWithParams(50052, ErrInvalidCertificateIdentifier.Error(), identifier)
+}
+
+func NewCertificateProfileUnavailableError(profile string) error {
+	return e.NewWithParams(50054, ErrCertificateProfileUnavailable.Error(), profile)
+}

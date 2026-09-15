@@ -1,0 +1,43 @@
+import type { ModelBase } from '@/api/curd'
+import { http, useCurdApi } from '@uozi-admin/request'
+
+export interface ExternalNotify extends ModelBase {
+  type: string
+  description: string
+  language: string
+  config: Record<string, string>
+  enabled: boolean
+}
+
+export interface TestMessageRequest {
+  type: string
+  language: string
+  config: Record<string, string>
+}
+
+export interface CreateExternalNotifyRequest {
+  type: string
+  description?: string
+  language: string
+  config: Record<string, string>
+  enabled: boolean
+}
+
+const baseUrl = '/external_notifies'
+
+const externalNotify = useCurdApi<ExternalNotify>(baseUrl)
+
+// Add test message API with direct parameters
+export function testMessage(params: TestMessageRequest): Promise<{ message: string }> {
+  return http.post(`${baseUrl}/test`, params)
+}
+
+export function listExternalNotifies(): Promise<{ data: ExternalNotify[] }> {
+  return http.get(baseUrl, { params: { page: 1, per_page: 1000 } })
+}
+
+export function createExternalNotify(params: CreateExternalNotifyRequest): Promise<ExternalNotify> {
+  return http.post(baseUrl, params)
+}
+
+export default externalNotify

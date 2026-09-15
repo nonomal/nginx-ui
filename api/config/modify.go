@@ -1,17 +1,18 @@
 package config
 
 import (
+	"net/http"
+	"path/filepath"
+	"time"
+
 	"github.com/0xJacky/Nginx-UI/api"
 	"github.com/0xJacky/Nginx-UI/internal/config"
-	"github.com/0xJacky/Nginx-UI/internal/helper"
 	"github.com/0xJacky/Nginx-UI/internal/nginx"
 	"github.com/0xJacky/Nginx-UI/model"
 	"github.com/0xJacky/Nginx-UI/query"
 	"github.com/gin-gonic/gin"
-	"github.com/sashabaranov/go-openai"
-	"net/http"
-	"os"
-	"time"
+	"github.com/uozi-tech/cosy"
+	"gorm.io/gen/field"
 )
 
 type EditConfigJson struct {
@@ -19,35 +20,28 @@ type EditConfigJson struct {
 }
 
 func EditConfig(c *gin.Context) {
-	name := c.Param("name")
 	var json struct {
-		Name          string `json:"name" binding:"required"`
-		Filepath      string `json:"filepath" binding:"required"`
-		NewFilepath   string `json:"new_filepath" binding:"required"`
-		Content       string `json:"content"`
-		SyncOverwrite bool   `json:"sync_overwrite"`
-		SyncNodeIds   []int  `json:"sync_node_ids"`
+		Content       string   `json:"content"`
+		Path          string   `json:"path"`
+		SyncOverwrite bool     `json:"sync_overwrite"`
+		SyncNodeIds   []uint64 `json:"sync_node_ids"`
 	}
-	if !api.BindAndValid(c, &json) {
+	if !cosy.BindAndValid(c, &json) {
 		return
 	}
 
-	path := json.Filepath
-	if !helper.IsUnderDirectory(path, nginx.GetConfPath()) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"message": "filepath is not under the nginx conf path",
-		})
+	absPath, err := config.ResolveAbsoluteOrRelativeConfPath(json.Path)
+	if err != nil {
+		cosy.ErrHandler(c, err)
 		return
 	}
 
-	if !helper.IsUnderDirectory(json.NewFilepath, nginx.GetConfPath()) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"message": "new filepath is not under the nginx conf path",
-		})
+	exists, err := nginx.Exists(absPath)
+	if err != nil {
+		cosy.ErrHandler(c, err)
 		return
 	}
-
-	if !helper.FileExists(path) {
+	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{
 			"message": "file not found",
 		})
@@ -55,89 +49,48 @@ func EditConfig(c *gin.Context) {
 	}
 
 	content := json.Content
-	origContent, err := os.ReadFile(path)
+	err = config.ValidateConfigFile(absPath, content)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
-	}
-
-	if content != "" && content != string(origContent) {
-		err = os.WriteFile(path, []byte(content), 0644)
-		if err != nil {
-			api.ErrHandler(c, err)
-			return
-		}
 	}
 
 	q := query.Config
-	cfg, err := q.Where(q.Filepath.Eq(json.Filepath)).FirstOrCreate()
+	cfg, err := q.Assign(field.Attrs(&model.Config{
+		Filepath: absPath,
+		Name:     filepath.Base(absPath),
+	})).Where(q.Filepath.Eq(absPath)).FirstOrCreate()
 	if err != nil {
-		api.ErrHandler(c, err)
 		return
 	}
 
-	_, err = q.Where(q.Filepath.Eq(json.Filepath)).
-		Select(q.Name, q.Filepath, q.SyncNodeIds, q.SyncOverwrite).
+	// Update database record
+	_, err = q.Where(q.Filepath.Eq(absPath)).
+		Select(q.SyncNodeIds, q.SyncOverwrite).
 		Updates(&model.Config{
-			Name:          json.Name,
-			Filepath:      json.NewFilepath,
 			SyncNodeIds:   json.SyncNodeIds,
 			SyncOverwrite: json.SyncOverwrite,
 		})
-
 	if err != nil {
-		api.ErrHandler(c, err)
 		return
 	}
-	g := query.ChatGPTLog
-	// handle rename
-	if path != json.NewFilepath {
-		if helper.FileExists(json.NewFilepath) {
-			c.JSON(http.StatusNotAcceptable, gin.H{
-				"message": "File exists",
-			})
-			return
-		}
-		err := os.Rename(json.Filepath, json.NewFilepath)
-		if err != nil {
-			api.ErrHandler(c, err)
-			return
-		}
 
-		// update ChatGPT record
-		_, _ = g.Where(g.Name.Eq(json.NewFilepath)).Delete()
-		_, _ = g.Where(g.Name.Eq(path)).Update(g.Name, json.NewFilepath)
-	}
+	cfg.SyncNodeIds = json.SyncNodeIds
+	cfg.SyncOverwrite = json.SyncOverwrite
 
-	err = config.SyncToRemoteServer(cfg, json.NewFilepath)
+	err = config.Save(absPath, content, cfg, api.CurrentUser(c).Name)
 	if err != nil {
-		api.ErrHandler(c, err)
+		cosy.ErrHandler(c, err)
 		return
-	}
-
-	output := nginx.Reload()
-	if nginx.GetLogLevel(output) >= nginx.Warn {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": output,
-		})
-		return
-	}
-
-	chatgpt, err := g.Where(g.Name.Eq(json.NewFilepath)).FirstOrCreate()
-	if err != nil {
-		api.ErrHandler(c, err)
-		return
-	}
-
-	if chatgpt.Content == nil {
-		chatgpt.Content = make([]openai.ChatCompletionMessage, 0)
 	}
 
 	c.JSON(http.StatusOK, config.Config{
-		Name:            name,
-		Content:         content,
-		ChatGPTMessages: chatgpt.Content,
-		FilePath:        json.NewFilepath,
-		ModifiedAt:      time.Now(),
+		Name:          filepath.Base(absPath),
+		Content:       content,
+		FilePath:      absPath,
+		ModifiedAt:    time.Now(),
+		Dir:           filepath.Dir(absPath),
+		SyncNodeIds:   cfg.SyncNodeIds,
+		SyncOverwrite: cfg.SyncOverwrite,
 	})
 }

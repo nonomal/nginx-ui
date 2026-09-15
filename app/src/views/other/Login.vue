@@ -1,30 +1,63 @@
 <script setup lang="ts">
-import { KeyOutlined, LockOutlined, UserOutlined } from '@ant-design/icons-vue'
-import { Form, message } from 'ant-design-vue'
-import { useCookies } from '@vueuse/integrations/useCookies'
+import type { FormInstance } from 'antdv-next'
+import { KeyOutlined, LoadingOutlined, LockOutlined, UserOutlined } from '@antdv-next/icons'
 import { startAuthentication } from '@simplewebauthn/browser'
-import { useUserStore } from '@/pinia'
 import auth from '@/api/auth'
 import install from '@/api/install'
-import SetLanguage from '@/components/SetLanguage/SetLanguage.vue'
-import SwitchAppearance from '@/components/SwitchAppearance/SwitchAppearance.vue'
-import Authorization from '@/components/TwoFA/Authorization.vue'
-import gettext from '@/gettext'
 import passkey from '@/api/passkey'
+import { DevDebugPanel } from '@/components/DevDebugPanel'
+import ICP from '@/components/ICP'
+import SetLanguage from '@/components/SetLanguage'
+import SwitchAppearance from '@/components/SwitchAppearance'
+import Authorization from '@/components/TwoFA'
+import gettext from '@/gettext'
+import { useSettingsStore, useUserStore } from '@/pinia'
 
 const thisYear = new Date().getFullYear()
 
 const route = useRoute()
 const router = useRouter()
 
+const loading = ref(false)
+const { message } = useGlobalApp()
+const enabled2FA = ref(false)
+
+// Debug data for development
+const debugData = computed(() => ({
+  loading: loading.value,
+  enabled2FA: enabled2FA.value,
+  routeQuery: route.query,
+  currentYear: thisYear,
+}))
+
+const loadingIndicator = h(LoadingOutlined, {
+  style: {
+    fontSize: '32px',
+    color: '#1890ff',
+  },
+  spin: true,
+})
+
+function simulateLoading() {
+  loading.value = true
+  setTimeout(() => {
+    loading.value = false
+  }, 3000)
+}
+
+function simulate2FA() {
+  enabled2FA.value = !enabled2FA.value
+}
+
+function toggleDebugLoading() {
+  loading.value = !loading.value
+}
+
 install.get_lock().then(async (r: { lock: boolean }) => {
   if (!r.lock)
     await router.push('/install')
 })
-
-const loading = ref(false)
-const enabled2FA = ref(false)
-const refOTP = ref()
+const refOTP = useTemplateRef('refOTP')
 const passcode = ref('')
 const recoveryCode = ref('')
 const passkeyConfigStatus = ref(false)
@@ -49,64 +82,139 @@ const rulesRef = reactive({
   ],
 })
 
-const { validate, validateInfos, clearValidate } = Form.useForm(modelRef, rulesRef)
+const formRef = ref<FormInstance>()
 const userStore = useUserStore()
+const settingsStore = useSettingsStore()
 const { login, passkeyLogin } = userStore
-const { secureSessionId } = storeToRefs(userStore)
+const { setSecureSession } = userStore
 
-const onSubmit = () => {
-  validate().then(async () => {
+interface LoginSuccessOptions {
+  token?: string
+  secureSessionId?: string
+  secureSessionTTL?: number
+  loginType?: 'normal' | 'passkey'
+  passkeyRawId?: string
+  showSuccessMessage?: boolean
+}
+
+async function handleLoginSuccess(options: LoginSuccessOptions = {}) {
+  const {
+    token,
+    secureSessionId: sessionId,
+    loginType = 'normal',
+    passkeyRawId,
+    showSuccessMessage = true,
+  } = options
+
+  if (showSuccessMessage) {
+    message.success($gettext('Login successful'), 1)
+  }
+
+  if (loginType === 'passkey' && passkeyRawId && token) {
+    passkeyLogin(passkeyRawId, token)
+  }
+  else if (token) {
+    login(token)
+  }
+
+  await nextTick()
+
+  if (sessionId) {
+    setSecureSession(sessionId, options.secureSessionTTL)
+  }
+
+  await userStore.fetchShortToken()
+  await userStore.getCurrentUser()
+  await nextTick()
+  if (gettext.current !== 'en' && gettext.current !== userStore.info?.language) {
+    await userStore.updateCurrentUserLanguage(gettext.current)
+  }
+  else {
+    await settingsStore.set_language(userStore.info?.language)
+  }
+
+  if (window.location.search) {
+    const newUrl = window.location.pathname + window.location.hash
+    window.history.replaceState(null, '', newUrl)
+  }
+
+  const next = (route.query?.next || '').toString()
+  await router.push(next && next !== '/' ? next : '/dashboard/server')
+}
+
+async function onSubmit() {
+  if (loading.value)
+    return
+
+  if (!enabled2FA.value) {
+    if (!formRef.value)
+      return
+    try {
+      await formRef.value.validate()
+    }
+    catch {
+      return
+    }
+  }
+
+  if (loading.value)
+    return
+
+  try {
     loading.value = true
 
     await auth.login(modelRef.username, modelRef.password, passcode.value, recoveryCode.value).then(async r => {
-      const next = (route.query?.next || '').toString() || '/'
-      const cookies = useCookies(['nginx-ui-2fa'])
       switch (r.code) {
         case 200:
-          message.success($gettext('Login successful'), 1)
-          login(r.token)
-          secureSessionId.value = r.secure_session_id
-          cookies.set('secure_session_id', r.secure_session_id, { maxAge: 60 * 3 })
-          await router.push(next)
+          await handleLoginSuccess({
+            token: r.token,
+            secureSessionId: r.secure_session_id,
+            secureSessionTTL: r.secure_session_ttl,
+          })
           break
         case 199:
           enabled2FA.value = true
           break
+        case 198: {
+          if (!r.pre_auth_id || !r.options?.publicKey)
+            throw new Error('Passkey pre-authentication response is incomplete')
+
+          const assertion = await startAuthentication({ optionsJSON: r.options.publicKey })
+          const verified = await auth.finish_passkey_pre_auth({
+            pre_auth_id: r.pre_auth_id,
+            options: assertion,
+          })
+          await handleLoginSuccess({
+            token: verified.token,
+            secureSessionId: verified.secure_session_id,
+            secureSessionTTL: verified.secure_session_ttl,
+            loginType: 'passkey',
+            passkeyRawId: assertion.rawId,
+          })
+          break
+        }
       }
     }).catch(e => {
-      switch (e.code) {
-        case 4031:
-          message.error($gettext('Incorrect username or password'))
-          break
-        case 4291:
-          message.error($gettext('Too many login failed attempts, please try again later'))
-          break
-        case 4033:
-          message.error($gettext('User is banned'))
-          break
-        case 4034:
-          refOTP.value?.clearInput()
-          message.error($gettext('Invalid 2FA or recovery code'))
-          break
-        default:
-          message.error($gettext(e.message ?? 'Server error'))
-          break
+      if (e.code === 4043) {
+        refOTP.value?.clearInput()
       }
     })
+  }
+  finally {
     loading.value = false
-  })
+  }
 }
 
 const user = useUserStore()
 
 if (user.isLogin) {
-  const next = (route.query?.next || '').toString() || '/dashboard'
+  const next = (route.query?.next || '').toString()
 
-  router.push(next)
+  router.push(next && next !== '/' ? next : '/dashboard/server')
 }
 
 watch(() => gettext.current, () => {
-  clearValidate()
+  formRef.value?.clearValidate()
 })
 
 const has_casdoor = ref(false)
@@ -119,26 +227,63 @@ auth.get_casdoor_uri()
       casdoor_uri.value = r.uri
     }
   })
-  .catch(e => {
-    message.error($gettext(e.message ?? 'Server error'))
+
+const has_oidc = ref(false)
+const oidc_uri = ref('')
+
+auth.get_oidc_uri()
+  .then(r => {
+    if (r?.uri) {
+      has_oidc.value = true
+      oidc_uri.value = r.uri
+    }
   })
 
-const loginWithCasdoor = () => {
+function loginWithCasdoor() {
   window.location.href = casdoor_uri.value
 }
 
-if (route.query?.code !== undefined && route.query?.state !== undefined) {
+function loginWithOIDC() {
+  window.location.href = oidc_uri.value
+}
+
+const searchParams = new URLSearchParams(window.location.search)
+const query = route.query
+const code = query?.code?.toString() ?? searchParams.get('code')
+const state = query?.state?.toString() ?? searchParams.get('state')
+const oidcToken = query?.oidc_token?.toString() ?? searchParams.get('oidc_token')
+const ssoError = query?.sso_error?.toString() ?? searchParams.get('sso_error')
+
+if (ssoError) {
+  message.error($gettext(ssoError))
+  if (window.location.search) {
+    const newUrl = window.location.pathname + window.location.hash
+    window.history.replaceState(null, '', newUrl)
+  }
+}
+
+if (oidcToken) {
   loading.value = true
-  auth.casdoor_login(route.query?.code?.toString(), route.query?.state?.toString()).then(async () => {
-    message.success($gettext('Login successful'), 1)
-
-    const next = (route.query?.next || '').toString() || '/'
-
-    await router.push(next)
-  }).catch(e => {
-    message.error($gettext(e.message ?? 'Server error'))
+  handleLoginSuccess({ token: oidcToken }).finally(() => {
+    loading.value = false
   })
-  loading.value = false
+}
+else if (code && state) {
+  loading.value = true
+  if (state.startsWith('nginx-ui-oidc_')) {
+    auth.oidc_login(code, state).then(async () => {
+      await handleLoginSuccess()
+    }).finally(() => {
+      loading.value = false
+    })
+  }
+  else {
+    auth.casdoor_login(code, state).then(async () => {
+      await handleLoginSuccess()
+    }).finally(() => {
+      loading.value = false
+    })
+  }
 }
 
 function handleOTPSubmit(code: string, recovery: string) {
@@ -154,12 +299,12 @@ passkey.get_config_status().then(r => {
   passkeyConfigStatus.value = r.status
 })
 
-const passkeyLoginLoading = ref(false)
 async function handlePasskeyLogin() {
-  passkeyLoginLoading.value = true
+  loading.value = true
+
   try {
     const begin = await auth.begin_passkey_login()
-    const asseResp = await startAuthentication(begin.options.publicKey)
+    const asseResp = await startAuthentication({ optionsJSON: begin.options.publicKey })
 
     const r = await auth.finish_passkey_login({
       session_id: begin.session_id,
@@ -167,18 +312,21 @@ async function handlePasskeyLogin() {
     })
 
     if (r.token) {
-      const next = (route.query?.next || '').toString() || '/'
-
-      passkeyLogin(asseResp.rawId, r.token)
-
-      await router.push(next)
+      await handleLoginSuccess({
+        token: r.token,
+        secureSessionId: r.secure_session_id,
+        secureSessionTTL: r.secure_session_ttl,
+        loginType: 'passkey',
+        passkeyRawId: asseResp.rawId,
+      })
     }
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  catch (e: any) {
-    message.error($gettext(e.message ?? 'Server error'))
+  catch (e) {
+    console.error(e)
   }
-  passkeyLoginLoading.value = false
+  finally {
+    loading.value = false
+  }
 }
 </script>
 
@@ -190,52 +338,75 @@ async function handlePasskeyLogin() {
           <div class="project-title">
             <h1>Nginx UI</h1>
           </div>
-          <AForm id="components-form-demo-normal-login">
-            <template v-if="!enabled2FA">
-              <AFormItem v-bind="validateInfos.username">
-                <AInput
-                  v-model:value="modelRef.username"
-                  :placeholder="$gettext('Username')"
-                >
-                  <template #prefix>
-                    <UserOutlined style="color: rgba(0, 0, 0, 0.25)" />
-                  </template>
-                </AInput>
-              </AFormItem>
-              <AFormItem v-bind="validateInfos.password">
-                <AInputPassword
-                  v-model:value="modelRef.password"
-                  :placeholder="$gettext('Password')"
-                >
-                  <template #prefix>
-                    <LockOutlined style="color: rgba(0, 0, 0, 0.25)" />
-                  </template>
-                </AInputPassword>
-              </AFormItem>
-              <AButton
-                v-if="has_casdoor"
-                block
-                html-type="submit"
-                :loading="loading"
-                class="mb-5"
-                @click="loginWithCasdoor"
-              >
-                {{ $gettext('SSO Login') }}
-              </AButton>
-            </template>
-            <div v-else>
-              <Authorization
-                ref="refOTP"
-                :two-f-a-status="{
-                  enabled: true,
-                  otp_status: true,
-                  passkey_status: false,
-                }"
-                @submit-o-t-p="handleOTPSubmit"
-              />
-            </div>
 
-            <AFormItem v-if="!enabled2FA">
+          <div v-if="loading" class="loading-container">
+            <ASpin :indicator="loadingIndicator" />
+            <div class="loading-text">
+              {{ $gettext('Authenticating...') }}
+            </div>
+          </div>
+
+          <!--
+            The two-factor step is rendered outside the credentials form on
+            purpose: the OTP component brings its own <form> element so that
+            password managers can discover the segmented code fields, and
+            nesting forms is invalid HTML.
+          -->
+          <div v-else-if="enabled2FA">
+            <Authorization
+              ref="refOTP"
+              :two-f-a-status="{
+                enabled: true,
+                otp_status: true,
+                passkey_status: false,
+                recovery_codes_generated: true,
+                recovery_codes_migration_required: false,
+              }"
+              @submit-o-t-p="handleOTPSubmit"
+            />
+          </div>
+
+          <AForm v-else id="components-form-demo-normal-login" ref="formRef" :model="modelRef" :rules="rulesRef">
+            <AFormItem name="username">
+              <AInput
+                v-model:value="modelRef.username"
+                :placeholder="$gettext('Username')"
+              >
+                <template #prefix>
+                  <UserOutlined style="color: rgba(0, 0, 0, 0.25)" />
+                </template>
+              </AInput>
+            </AFormItem>
+            <AFormItem name="password">
+              <AInputPassword
+                v-model:value="modelRef.password"
+                :placeholder="$gettext('Password')"
+              >
+                <template #prefix>
+                  <LockOutlined style="color: rgba(0, 0, 0, 0.25)" />
+                </template>
+              </AInputPassword>
+            </AFormItem>
+            <AButton
+              v-if="has_casdoor"
+              block
+              :loading="loading"
+              class="mb-5"
+              @click="loginWithCasdoor"
+            >
+              {{ $gettext('SSO Login') }}
+            </AButton>
+            <AButton
+              v-if="has_oidc"
+              block
+              :loading="loading"
+              class="mb-5"
+              @click="loginWithOIDC"
+            >
+              {{ $gettext('OIDC Login') }}
+            </AButton>
+
+            <AFormItem>
               <AButton
                 type="primary"
                 block
@@ -258,7 +429,7 @@ async function handlePasskeyLogin() {
                 </ADivider>
 
                 <AButton
-                  :loading="passkeyLoginLoading"
+                  :disabled="loading"
                   @click="handlePasskeyLogin"
                 >
                   <KeyOutlined />
@@ -268,7 +439,10 @@ async function handlePasskeyLogin() {
             </AFormItem>
           </AForm>
           <div class="footer">
-            <p>Copyright © 2021 - {{ thisYear }} Nginx UI</p>
+            <p class="mb-4">
+              Copyright © 2021 - {{ thisYear }} Nginx UI
+            </p>
+            <ICP class="mb-4" />
             Language
             <SetLanguage class="inline" />
             <div class="flex justify-center mt-4">
@@ -276,6 +450,40 @@ async function handlePasskeyLogin() {
             </div>
           </div>
         </div>
+
+        <!-- Development Debug Panel -->
+        <DevDebugPanel :debug-data="debugData">
+          <template #default="{ debugData: slotDebugData }">
+            <div class="debug-item">
+              <span class="debug-label">Loading State:</span>
+              <span class="debug-value">{{ (slotDebugData as any).loading ? 'Active' : 'Inactive' }}</span>
+            </div>
+            <div class="debug-item">
+              <span class="debug-label">2FA Enabled:</span>
+              <span class="debug-value">{{ (slotDebugData as any).enabled2FA ? 'Yes' : 'No' }}</span>
+            </div>
+            <div class="debug-item">
+              <span class="debug-label">Route Query:</span>
+              <pre>{{ JSON.stringify((slotDebugData as any).routeQuery, null, 2) }}</pre>
+            </div>
+            <div class="debug-item">
+              <span class="debug-label">Quick Actions:</span>
+              <div class="mt-2">
+                <ASpace orientation="vertical" :size="8">
+                  <AButton size="small" block @click="toggleDebugLoading">
+                    {{ (slotDebugData as any).loading ? 'Stop Loading' : 'Toggle Loading' }}
+                  </AButton>
+                  <AButton size="small" block @click="simulateLoading">
+                    Simulate 3s Loading
+                  </AButton>
+                  <AButton size="small" block @click="simulate2FA">
+                    {{ (slotDebugData as any).enabled2FA ? 'Hide 2FA' : 'Show 2FA' }}
+                  </AButton>
+                </ASpace>
+              </div>
+            </div>
+          </template>
+        </DevDebugPanel>
       </div>
     </ALayoutContent>
   </ALayout>
@@ -294,10 +502,14 @@ async function handlePasskeyLogin() {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100vh;
+  // min-height rather than a fixed height: when the form is taller than the
+  // viewport, a centred flex container pushes the overflow out of both ends and
+  // the page background stops covering it.
+  min-height: 100vh;
+  padding: 24px 0;
 
   .login-form {
-    max-width: 400px;
+    max-width: 420px;
     width: 80%;
 
     .project-title {
@@ -314,8 +526,27 @@ async function handlePasskeyLogin() {
       color: #a8a5a5 !important;
     }
 
+    .loading-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 80px 20px;
+      text-align: center;
+
+      .loading-text {
+        margin-top: 16px;
+        font-size: 16px;
+        color: rgba(0, 0, 0, 0.65);
+      }
+    }
+
+    .dark .loading-container .loading-text {
+      color: rgba(255, 255, 255, 0.65);
+    }
+
     .footer {
-      padding: 30px;
+      padding: 30px 20px;
       text-align: center;
       font-size: 14px;
     }

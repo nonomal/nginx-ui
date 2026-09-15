@@ -28,7 +28,7 @@ func newAcmeUser(db *gorm.DB, opts ...gen.DOOption) acmeUser {
 
 	tableName := _acmeUser.acmeUserDo.TableName()
 	_acmeUser.ALL = field.NewAsterisk(tableName)
-	_acmeUser.ID = field.NewInt(tableName, "id")
+	_acmeUser.ID = field.NewUint64(tableName, "id")
 	_acmeUser.CreatedAt = field.NewTime(tableName, "created_at")
 	_acmeUser.UpdatedAt = field.NewTime(tableName, "updated_at")
 	_acmeUser.DeletedAt = field.NewField(tableName, "deleted_at")
@@ -39,6 +39,8 @@ func newAcmeUser(db *gorm.DB, opts ...gen.DOOption) acmeUser {
 	_acmeUser.Key = field.NewField(tableName, "key")
 	_acmeUser.Proxy = field.NewString(tableName, "proxy")
 	_acmeUser.RegisterOnStartup = field.NewBool(tableName, "register_on_startup")
+	_acmeUser.EABKeyID = field.NewString(tableName, "eab_key_id")
+	_acmeUser.EABHMACKey = field.NewString(tableName, "eabhmac_key")
 
 	_acmeUser.fillFieldMap()
 
@@ -49,7 +51,7 @@ type acmeUser struct {
 	acmeUserDo
 
 	ALL               field.Asterisk
-	ID                field.Int
+	ID                field.Uint64
 	CreatedAt         field.Time
 	UpdatedAt         field.Time
 	DeletedAt         field.Field
@@ -60,6 +62,8 @@ type acmeUser struct {
 	Key               field.Field
 	Proxy             field.String
 	RegisterOnStartup field.Bool
+	EABKeyID          field.String
+	EABHMACKey        field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -76,7 +80,7 @@ func (a acmeUser) As(alias string) *acmeUser {
 
 func (a *acmeUser) updateTableName(table string) *acmeUser {
 	a.ALL = field.NewAsterisk(table)
-	a.ID = field.NewInt(table, "id")
+	a.ID = field.NewUint64(table, "id")
 	a.CreatedAt = field.NewTime(table, "created_at")
 	a.UpdatedAt = field.NewTime(table, "updated_at")
 	a.DeletedAt = field.NewField(table, "deleted_at")
@@ -87,6 +91,8 @@ func (a *acmeUser) updateTableName(table string) *acmeUser {
 	a.Key = field.NewField(table, "key")
 	a.Proxy = field.NewString(table, "proxy")
 	a.RegisterOnStartup = field.NewBool(table, "register_on_startup")
+	a.EABKeyID = field.NewString(table, "eab_key_id")
+	a.EABHMACKey = field.NewString(table, "eabhmac_key")
 
 	a.fillFieldMap()
 
@@ -103,7 +109,7 @@ func (a *acmeUser) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (a *acmeUser) fillFieldMap() {
-	a.fieldMap = make(map[string]field.Expr, 11)
+	a.fieldMap = make(map[string]field.Expr, 13)
 	a.fieldMap["id"] = a.ID
 	a.fieldMap["created_at"] = a.CreatedAt
 	a.fieldMap["updated_at"] = a.UpdatedAt
@@ -115,6 +121,8 @@ func (a *acmeUser) fillFieldMap() {
 	a.fieldMap["key"] = a.Key
 	a.fieldMap["proxy"] = a.Proxy
 	a.fieldMap["register_on_startup"] = a.RegisterOnStartup
+	a.fieldMap["eab_key_id"] = a.EABKeyID
+	a.fieldMap["eabhmac_key"] = a.EABHMACKey
 }
 
 func (a acmeUser) clone(db *gorm.DB) acmeUser {
@@ -130,7 +138,7 @@ func (a acmeUser) replaceDB(db *gorm.DB) acmeUser {
 type acmeUserDo struct{ gen.DO }
 
 // FirstByID Where("id=@id")
-func (a acmeUserDo) FirstByID(id int) (result *model.AcmeUser, err error) {
+func (a acmeUserDo) FirstByID(id uint64) (result *model.AcmeUser, err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder
@@ -145,7 +153,7 @@ func (a acmeUserDo) FirstByID(id int) (result *model.AcmeUser, err error) {
 }
 
 // DeleteByID update @@table set deleted_at=strftime('%Y-%m-%d %H:%M:%S','now') where id=@id
-func (a acmeUserDo) DeleteByID(id int) (err error) {
+func (a acmeUserDo) DeleteByID(id uint64) (err error) {
 	var params []interface{}
 
 	var generateSQL strings.Builder

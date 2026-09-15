@@ -1,0 +1,49 @@
+package cert
+
+import (
+	"testing"
+
+	"github.com/go-acme/lego/v5/certcrypto"
+)
+
+func TestNewObtainRequestIncludesCommonNameOption(t *testing.T) {
+	payload := &ConfigPayload{
+		ServerName:       []string{"example.com", "www.example.com"},
+		KeyType:          certcrypto.RSA2048,
+		MustStaple:       true,
+		EnableCommonName: true,
+		Profile:          "shortlived",
+		ReplacesCertID:   "aki.serial",
+	}
+
+	request := newObtainRequest(payload)
+
+	if !request.EnableCommonName {
+		t.Fatalf("EnableCommonName = false, want true")
+	}
+	if !request.MustStaple {
+		t.Fatalf("MustStaple = false, want true")
+	}
+	if request.KeyType != certcrypto.RSA2048 {
+		t.Fatalf("KeyType = %s, want %s", request.KeyType, certcrypto.RSA2048)
+	}
+	if len(request.Domains) != 2 || request.Domains[0] != "example.com" || request.Domains[1] != "www.example.com" {
+		t.Fatalf("Domains = %#v, want example.com and www.example.com", request.Domains)
+	}
+	if request.Profile != "shortlived" {
+		t.Fatalf("Profile = %q, want shortlived", request.Profile)
+	}
+	if request.ReplacesCertID != "aki.serial" {
+		t.Fatalf("ReplacesCertID = %q, want aki.serial", request.ReplacesCertID)
+	}
+}
+
+func TestNewRenewOptionsIncludesProfile(t *testing.T) {
+	options := newRenewOptions(&ConfigPayload{Profile: "shortlived", MustStaple: true})
+	if options.Profile != "shortlived" {
+		t.Fatalf("Profile = %q, want shortlived", options.Profile)
+	}
+	if !options.MustStaple {
+		t.Fatal("MustStaple = false, want true")
+	}
+}

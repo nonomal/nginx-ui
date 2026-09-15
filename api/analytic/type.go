@@ -2,10 +2,10 @@ package analytic
 
 import (
 	"github.com/0xJacky/Nginx-UI/internal/analytic"
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/host"
-	"github.com/shirou/gopsutil/v3/load"
-	"github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/host"
+	"github.com/shirou/gopsutil/v4/load"
+	"github.com/shirou/gopsutil/v4/net"
 )
 
 type CPUStat struct {
@@ -16,12 +16,13 @@ type CPUStat struct {
 }
 
 type Stat struct {
-	Uptime  uint64             `json:"uptime"`
-	LoadAvg *load.AvgStat      `json:"loadavg"`
-	CPU     CPUStat            `json:"cpu"`
-	Memory  analytic.MemStat   `json:"memory"`
-	Disk    analytic.DiskStat  `json:"disk"`
-	Network net.IOCountersStat `json:"network"`
+	SampledAt int64              `json:"sampled_at"`
+	Uptime    uint64             `json:"uptime"`
+	LoadAvg   *load.AvgStat      `json:"loadavg"`
+	CPU       CPUStat            `json:"cpu"`
+	Memory    analytic.MemStat   `json:"memory"`
+	Disk      analytic.DiskStat  `json:"disk"`
+	Network   net.IOCountersStat `json:"network"`
 }
 
 type CPURecords struct {
@@ -42,11 +43,12 @@ type DiskIORecords struct {
 }
 
 type InitResp struct {
-	Host    *host.InfoStat    `json:"host"`
-	CPU     CPURecords        `json:"cpu"`
-	Network NetworkRecords    `json:"network"`
-	DiskIO  DiskIORecords     `json:"disk_io"`
-	Memory  analytic.MemStat  `json:"memory"`
-	Disk    analytic.DiskStat `json:"disk"`
-	LoadAvg *load.AvgStat     `json:"loadavg"`
+	Host        *host.InfoStat    `json:"host"`
+	IPAddresses []string          `json:"ip_addresses"`
+	CPU         CPURecords        `json:"cpu"`
+	Network     NetworkRecords    `json:"network"`
+	DiskIO      DiskIORecords     `json:"disk_io"`
+	Memory      analytic.MemStat  `json:"memory"`
+	Disk        analytic.DiskStat `json:"disk"`
+	LoadAvg     *load.AvgStat     `json:"loadavg"`
 }

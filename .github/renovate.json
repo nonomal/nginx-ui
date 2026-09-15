@@ -1,0 +1,34 @@
+{
+  "extends": [
+    "config:recommended",
+    "group:allNonMajor",
+    ":semanticCommitTypeAll(chore)",
+    ":disableDependencyDashboard"
+  ],
+  "rangeStrategy": "bump",
+  "minimumReleaseAge": "3 days",
+  "npm": {
+    "commitMessageTopic": "{{prettyDepType}} {{depName}}"
+  },
+  "gomod": {
+    "commitMessageTopic": "{{prettyDepType}} {{depName}}"
+  },
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest"
+      ],
+      "automerge": true,
+      "automergeSchedule": [
+        "after 1am and before 2am"
+      ],
+      "schedule": [
+        "after 2am and before 3am"
+      ]
+    }
+  ],
+  "ignoreDeps": ["vue3-apexcharts", "gorm.io/gorm", "gorm.io/plugin/dbresolver"]
+}

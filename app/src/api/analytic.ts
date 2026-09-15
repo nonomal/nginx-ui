@@ -1,5 +1,4 @@
-import http from '@/lib/http'
-import ws from '@/lib/websocket'
+import { http } from '@uozi-admin/request'
 
 export interface CPUInfoStat {
   cpu: number
@@ -59,12 +58,23 @@ export interface MemStat {
   pressure: number
 }
 
+export interface PartitionStat {
+  mountpoint: string
+  device: string
+  fstype: string
+  total: string
+  used: string
+  free: string
+  percentage: number
+}
+
 export interface DiskStat {
   total: string
   used: string
   percentage: number
   writes: Usage
   reads: Usage
+  partitions: PartitionStat[]
 }
 
 export interface LoadStat {
@@ -97,6 +107,7 @@ export interface DiskIORecords {
 
 export interface AnalyticInit {
   host: HostInfoStat
+  ip_addresses: string[]
   cpu: CPURecords
   network: NetworkRecords
   disk_io: DiskIORecords
@@ -109,12 +120,8 @@ const analytic = {
   init(): Promise<AnalyticInit> {
     return http.get('/analytic/init')
   },
-  server() {
-    return ws('/api/analytic')
-  },
-  nodes() {
-    return ws('/api/analytic/nodes')
-  },
+  serverWebSocketUrl: '/api/analytic',
+  nodesWebSocketUrl: '/api/analytic/nodes',
 }
 
 export default analytic

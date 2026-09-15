@@ -1,32 +1,52 @@
 <script setup lang="ts">
 import type { Ref } from 'vue'
-import { message } from 'ant-design-vue'
-import { AutoCertState } from '@/constants'
-import CertInfo from '@/views/site/cert/CertInfo.vue'
-import AutoCertStepOne from '@/views/site/cert/components/AutoCertStepOne.vue'
-import CodeEditor from '@/components/CodeEditor/CodeEditor.vue'
-import type { Cert } from '@/api/cert'
-import cert from '@/api/cert'
-import FooterToolBar from '@/components/FooterToolbar/FooterToolBar.vue'
-import RenewCert from '@/views/certificate/RenewCert.vue'
-import NodeSelector from '@/components/NodeSelector/NodeSelector.vue'
+import type { Cert, SelfSignedCertPayload } from '@/api/cert'
+import cert, { toSelfSignedPayload } from '@/api/cert'
+import { AutoCertState, normalizePrivateKeyType } from '@/constants'
+
+import AutoCertManagement from './components/AutoCertManagement.vue'
+import CertificateActions from './components/CertificateActions.vue'
+import CertificateBasicInfo from './components/CertificateBasicInfo.vue'
+import CertificateContentEditor from './components/CertificateContentEditor.vue'
+import CertificateDownload from './components/CertificateDownload.vue'
+import SelfSignedCertManagement from './components/SelfSignedCertManagement.vue'
+import { useCertStore } from './store'
+
+const { message } = App.useApp()
 
 const route = useRoute()
+const certStore = useCertStore()
+const router = useRouter()
+const errors = ref({}) as Ref<Record<string, string>>
 
 const id = computed(() => {
   return Number.parseInt(route.params.id as string)
 })
 
-const data = ref({}) as Ref<Cert>
+const { data } = storeToRefs(certStore)
 
-const notShowInAutoCert = computed(() => {
-  return data.value.auto_cert !== AutoCertState.Enable
+const isManaged = computed(() => {
+  return data.value.auto_cert === AutoCertState.Enable || data.value.auto_cert === AutoCertState.Sync
 })
+
+const isSelfSigned = computed(() => {
+  return data.value.auto_cert === AutoCertState.SelfSigned
+})
+
+const selfSignedPayload = ref<SelfSignedCertPayload>()
+
+watch(data, value => {
+  if (value.auto_cert === AutoCertState.SelfSigned)
+    selfSignedPayload.value = toSelfSignedPayload(value)
+}, { immediate: true })
 
 function init() {
   if (id.value > 0) {
-    cert.get(id.value).then(r => {
-      data.value = r
+    cert.getItem(id.value).then(r => {
+      // Backend stores key_type in its canonical form (EC256, RSA2048…); the
+      // ACME form's ASelect options use the legacy keys (P256, 2048…). Normalize
+      // on load so the dropdown highlights the right option when editing.
+      data.value = { ...r, key_type: normalizePrivateKeyType(r.key_type) }
     })
   }
   else {
@@ -38,225 +58,140 @@ onMounted(() => {
   init()
 })
 
-const router = useRouter()
-const errors = ref({}) as Ref<Record<string, string>>
-function save() {
-  cert.save(data.value.id, data.value).then(r => {
-    data.value = r
+async function save() {
+  try {
+    let savedId = data.value.id
+    if (isSelfSigned.value && selfSignedPayload.value && data.value.id) {
+      const payload = selfSignedPayload.value
+      const name = payload.name.trim()
+      const domains = payload.domains.map(d => d.trim()).filter(Boolean)
+      const ip_addresses = payload.ip_addresses.map(s => s.trim()).filter(Boolean)
+
+      if (!name) {
+        message.error($gettext('Please enter a name for the certificate'))
+        return
+      }
+      if (domains.length === 0 && ip_addresses.length === 0) {
+        message.error($gettext('Please enter at least one domain or IP address'))
+        return
+      }
+
+      const currentId = data.value.id
+      const result = await cert.modify_self_signed(currentId, {
+        ...payload,
+        name,
+        domains,
+        ip_addresses,
+      })
+      savedId = result.id || currentId
+      data.value = { ...result, id: savedId }
+    }
+    else {
+      await certStore.save()
+      savedId = data.value.id
+    }
+    if (!savedId) {
+      message.error($gettext('Saved certificate response is missing an ID'))
+      return
+    }
     message.success($gettext('Save successfully'))
-    router.push(`/certificates/${r.id}`)
     errors.value = {}
-  }).catch(e => {
-    errors.value = e.errors
-    message.error($gettext(e?.message ?? 'Server error'))
-  })
+    await router.push(`/certificates/${savedId}`)
+  }
+  // eslint-disable-next-line ts/no-explicit-any
+  catch (e: any) {
+    errors.value = e.errors ?? {}
+    message.error(e.message ?? $gettext('Server error'))
+  }
+}
+
+function handleBack() {
+  router.push('/certificates/list')
 }
 
 const log = computed(() => {
-  const logs = data.value.log?.split('\n')
+  if (!data.value.log)
+    return ''
 
-  logs.forEach((line, idx, lines) => {
-    const regex = /\[Nginx UI\] (.*)/
-
-    const matches = line.match(regex)
-
-    if (matches && matches.length > 1) {
-      const extractedText = matches[1]
-
-      lines[idx] = line.replaceAll(extractedText, $gettext(extractedText))
+  return data.value.log.split('\n').map(line => {
+    try {
+      return T(JSON.parse(line))
     }
-  })
-
-  return logs.join('\n')
-})
-
-const isManaged = computed(() => {
-  return data.value.auto_cert === AutoCertState.Enable
+    catch {
+      // fallback to legacy log format
+      const matches = line.match(/\[Nginx UI\] (.*)/)
+      if (matches?.[1])
+        return line.replaceAll(matches[1], $gettext(matches[1]))
+      return line
+    }
+  }).join('\n')
 })
 </script>
 
 <template>
   <ACard :title="id > 0 ? $gettext('Modify Certificate') : $gettext('Import Certificate')">
-    <div
-      v-if="isManaged"
-      class="mb-4"
-    >
-      <div class="mb-2">
-        <AAlert
-          :message="$gettext('This certificate is managed by Nginx UI')"
-          type="success"
-          show-icon
-        />
-      </div>
-      <div
-        v-if="!data.filename"
-        class="mt-4 mb-4"
-      >
-        <AAlert
-          :message="$gettext('This Auto Cert item is invalid, please remove it.')"
-          type="error"
-          show-icon
-        />
-      </div>
-      <div
-        v-else-if="!data.domains"
-        class="mt-4 mb-4"
-      >
-        <AAlert
-          :message="$gettext('Domains list is empty, try to reopen Auto Cert for %{config}', { config: data.filename })"
-          type="error"
-          show-icon
-        />
-      </div>
-    </div>
-
-    <ARow>
+    <ARow :gutter="[16, 16]">
       <ACol
         :sm="24"
-        :md="12"
+        :lg="12"
       >
-        <AForm
-          v-if="data.certificate_info"
-          layout="vertical"
-        >
-          <AFormItem :label="$gettext('Certificate Status')">
-            <CertInfo
-              :cert="data.certificate_info"
-              class="max-w-96"
-            />
-          </AFormItem>
-        </AForm>
+        <!-- Self-signed Certificate Management -->
+        <SelfSignedCertManagement
+          v-if="isSelfSigned && selfSignedPayload"
+          v-model:value="selfSignedPayload"
+          :certificate-info="data.certificate_info"
+        />
 
-        <template v-if="isManaged">
-          <RenewCert
-            :options="{
-              name: data.name,
-              domains: data.domains,
-              key_type: data.key_type,
-              challenge_method: data.challenge_method,
-              dns_credential_id: data.dns_credential_id,
-            }"
-            @renewed="init"
+        <!-- Auto Certificate Management -->
+        <AutoCertManagement
+          v-else
+          v-model:data="data"
+          :is-managed="isManaged"
+          @renewed="init"
+        />
+
+        <AForm layout="vertical">
+          <!-- Certificate Basic Information -->
+          <CertificateBasicInfo
+            v-if="!isSelfSigned"
+            v-model:data="data"
+            :errors="errors"
+            :is-managed="isManaged"
           />
 
-          <AutoCertStepOne
-            v-model:options="data"
-            style="max-width: 600px"
-            hide-note
-          />
-        </template>
+          <!-- Download Certificate Files -->
+          <CertificateDownload :data="data" />
 
-        <AForm
-          layout="vertical"
-          style="max-width: 600px"
-        >
-          <AFormItem
-            :label="$gettext('Name')"
-            :validate-status="errors.name ? 'error' : ''"
-            :help="errors.name === 'required'
-              ? $gettext('This field is required')
-              : ''"
-          >
-            <p v-if="isManaged">
-              {{ data.name }}
-            </p>
-            <AInput
-              v-else
-              v-model:value="data.name"
-            />
-          </AFormItem>
-          <AFormItem
-            :label="$gettext('SSL Certificate Path')"
-            :validate-status="errors.ssl_certificate_path ? 'error' : ''"
-            :help="errors.ssl_certificate_path === 'required' ? $gettext('This field is required')
-              : errors.ssl_certificate_path === 'certificate_path'
-                ? $gettext('The path exists, but the file is not a certificate') : ''"
-          >
-            <p v-if="isManaged">
-              {{ data.ssl_certificate_path }}
-            </p>
-            <AInput
-              v-else
-              v-model:value="data.ssl_certificate_path"
-            />
-          </AFormItem>
-          <AFormItem
-            :label="$gettext('SSL Certificate Key Path')"
-            :validate-status="errors.ssl_certificate_key_path ? 'error' : ''"
-            :help="errors.ssl_certificate_key_path === 'required' ? $gettext('This field is required')
-              : errors.ssl_certificate_key_path === 'privatekey_path'
-                ? $gettext('The path exists, but the file is not a private key') : ''"
-          >
-            <p v-if="isManaged">
-              {{ data.ssl_certificate_key_path }}
-            </p>
-            <AInput
-              v-else
-              v-model:value="data.ssl_certificate_key_path"
-            />
-          </AFormItem>
-          <AFormItem :label="$gettext('Sync to')">
-            <NodeSelector
-              v-model:target="data.sync_node_ids"
-              hidden-local
-            />
-          </AFormItem>
-          <AFormItem
-            :label="$gettext('SSL Certificate Content')"
-            :validate-status="errors.ssl_certificate ? 'error' : ''"
-            :help="errors.ssl_certificate === 'certificate'
-              ? $gettext('The input is not a SSL Certificate') : ''"
-          >
-            <CodeEditor
-              v-model:content="data.ssl_certificate"
-              default-height="300px"
-              :readonly="!notShowInAutoCert"
-              :placeholder="$gettext('Leave blank will not change anything')"
-            />
-          </AFormItem>
-          <AFormItem
-            :label="$gettext('SSL Certificate Key Content')"
-            :validate-status="errors.ssl_certificate_key ? 'error' : ''"
-            :help="errors.ssl_certificate_key === 'privatekey'
-              ? $gettext('The input is not a SSL Certificate Key') : ''"
-          >
-            <CodeEditor
-              v-model:content="data.ssl_certificate_key"
-              default-height="300px"
-              :readonly="!notShowInAutoCert"
-              :placeholder="$gettext('Leave blank will not change anything')"
-            />
-          </AFormItem>
+          <!-- Certificate Content Editor -->
+          <CertificateContentEditor
+            v-model:data="data"
+            :errors="errors"
+            :readonly="isManaged || isSelfSigned"
+            class="max-w-600px"
+          />
         </AForm>
       </ACol>
+
+      <!-- Log Column for Auto Cert -->
       <ACol
         v-if="data.auto_cert === AutoCertState.Enable"
         :sm="24"
-        :md="12"
+        :lg="12"
       >
-        <ACard :title="$gettext('Log')">
+        <ACard size="small" :title="$gettext('Log')">
           <pre
+            v-dompurify-html="log"
             class="log-container"
-            v-html="log"
           />
         </ACard>
       </ACol>
     </ARow>
 
-    <FooterToolBar>
-      <ASpace>
-        <AButton @click="$router.push('/certificates/list')">
-          {{ $gettext('Back') }}
-        </AButton>
-
-        <AButton
-          type="primary"
-          @click="save"
-        >
-          {{ $gettext('Save') }}
-        </AButton>
-      </ASpace>
-    </FooterToolBar>
+    <!-- Certificate Actions -->
+    <CertificateActions
+      @save="save"
+      @back="handleBack"
+    />
   </ACard>
 </template>
 
@@ -268,5 +203,41 @@ const isManaged = computed(() => {
 
   font-size: 12px;
   line-height: 2;
+}
+
+.code-editor-container {
+  position: relative;
+
+  .drag-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(24, 144, 255, 0.1);
+    border: 2px dashed #1890ff;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+
+    .drag-content {
+      text-align: center;
+      color: #1890ff;
+
+      .drag-icon {
+        font-size: 48px;
+        margin-bottom: 16px;
+        display: block;
+      }
+
+      p {
+        font-size: 16px;
+        margin: 0;
+        font-weight: 500;
+      }
+    }
+  }
 }
 </style>

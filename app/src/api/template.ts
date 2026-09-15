@@ -1,11 +1,10 @@
-import Curd from '@/api/curd'
-import http from '@/lib/http'
-import type { NgxDirective, NgxLocation, NgxServer } from '@/api/ngx'
+import type { NgxConfig, NgxDirective, NgxLocation, NgxServer } from '@/api/ngx'
+import { extendCurdApi, http, useCurdApi } from '@uozi-admin/request'
 
 export interface Variable {
   type?: string
   name?: Record<string, string>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line ts/no-explicit-any
   value?: any
   mask?: Record<string, Record<string, string>>
 }
@@ -21,28 +20,43 @@ export interface Template extends NgxServer {
   directives?: NgxDirective[]
 }
 
-class TemplateApi extends Curd<Template> {
-  get_config_list() {
-    return http.get('template/configs')
-  }
+export type QuickConfigType = 'reverse_proxy' | 'static' | 'redirect'
 
-  get_block_list() {
-    return http.get('template/blocks')
-  }
-
-  get_config(name: string) {
-    return http.get(`template/config/${name}`)
-  }
-
-  get_block(name: string) {
-    return http.get(`template/block/${name}`)
-  }
-
-  build_block(name: string, data: Variable) {
-    return http.post(`template/block/${name}`, data)
-  }
+export interface QuickConfigRequest {
+  type: QuickConfigType
+  domains: string[]
+  enable_tls?: boolean
+  redirect_http_to_https?: boolean
+  // reverse_proxy
+  scheme?: 'http' | 'https'
+  host?: string
+  port?: string
+  enable_websocket?: boolean
+  client_max_body_size?: string
+  // static
+  web_root?: string
+  index?: string
+  spa_fallback?: boolean
+  // redirect
+  target_url?: string
+  redirect_status?: '301' | '302' | '308'
 }
 
-const template = new TemplateApi('/template')
+export interface QuickConfigResponse {
+  template: string
+  tokenized: NgxConfig
+}
+
+const baseUrl = '/templates'
+
+const template = extendCurdApi(useCurdApi<Template>(baseUrl), {
+  get_config_list: () => http.get(`${baseUrl}/configs`),
+  get_block_list: () => http.get(`${baseUrl}/blocks`),
+  get_config: (name: string) => http.get(`${baseUrl}/config/${name}`),
+  get_block: (name: string) => http.get(`${baseUrl}/block/${name}`),
+  build_block: (name: string, data: Variable) => http.post(`${baseUrl}/block/${name}`, data),
+  get_quick_config: (data: QuickConfigRequest): Promise<QuickConfigResponse> => http.post(`${baseUrl}/quick_config`, data),
+  analyze_quick_config: (config: string): Promise<{ request: QuickConfigRequest }> => http.post(`${baseUrl}/quick_config/analyze`, { config }),
+})
 
 export default template

@@ -1,0 +1,255 @@
+package performance
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"text/template"
+	"time"
+
+	"github.com/0xJacky/Nginx-UI/internal/nginx"
+	"github.com/0xJacky/Nginx-UI/settings"
+	"github.com/uozi-tech/cosy"
+)
+
+// StubStatusInfo Store the stub_status module status
+type StubStatusInfo struct {
+	Enabled bool   `json:"stub_status_enabled"` // stub_status module is enabled
+	URL     string `json:"stub_status_url"`     // stub_status access address
+}
+
+type StubStatusData struct {
+	Active   int `json:"active"`
+	Accepts  int `json:"accepts"`
+	Handled  int `json:"handled"`
+	Requests int `json:"requests"`
+	Reading  int `json:"reading"`
+	Writing  int `json:"writing"`
+	Waiting  int `json:"waiting"`
+}
+
+const (
+	StubStatusPath       = "/stub_status"
+	StubStatusHost       = "127.0.0.1"
+	StubStatusProtocol   = "http"
+	StubStatusAllow      = "127.0.0.1"
+	StubStatusDeny       = "all"
+	StubStatusConfigName = "stub_status_nginx-ui.conf"
+)
+
+// StubStatusProvider overrides where connection counters come from.
+//
+// The slot defaults to nil and only internal/demo fills it. Deliberately scoped
+// to the counters alone: process info and config info stay real, so the
+// dashboard still reflects the nginx that is genuinely running.
+type StubStatusProvider interface {
+	StubStatus() *StubStatusData
+}
+
+var stubStatusProvider StubStatusProvider
+
+// SetStubStatusProvider installs a counter override. Call once, at boot.
+func SetStubStatusProvider(p StubStatusProvider) {
+	stubStatusProvider = p
+}
+
+// GetStubStatusData Get the stub_status module data
+func GetStubStatusData() (bool, *StubStatusData, error) {
+	if p := stubStatusProvider; p != nil {
+		if data := p.StubStatus(); data != nil {
+			return true, data, nil
+		}
+	}
+
+	result := &StubStatusData{
+		Active:   0,
+		Accepts:  0,
+		Handled:  0,
+		Requests: 0,
+		Reading:  0,
+		Writing:  0,
+		Waiting:  0,
+	}
+
+	// Get the stub_status status information
+	enabled, statusURL := IsStubStatusEnabled()
+	if !enabled {
+		return false, result, ErrStubStatusDisabled
+	}
+
+	// Create an HTTP client
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	// Send a request to get the stub_status data
+	resp, err := client.Get(statusURL)
+	if err != nil {
+		return enabled, result, cosy.WrapErrorWithParams(ErrStubStatusRequest, err.Error())
+	}
+	defer resp.Body.Close()
+
+	// Read the response content
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return enabled, result, cosy.WrapErrorWithParams(ErrResponseRead, err.Error())
+	}
+
+	// Parse the response content
+	statusContent := string(body)
+
+	// Match the active connection number
+	activeRe := regexp.MustCompile(`Active connections:\s+(\d+)`)
+	if matches := activeRe.FindStringSubmatch(statusContent); len(matches) > 1 {
+		result.Active, _ = strconv.Atoi(matches[1])
+	}
+
+	// Match the request statistics information
+	serverRe := regexp.MustCompile(`(\d+)\s+(\d+)\s+(\d+)`)
+	if matches := serverRe.FindStringSubmatch(statusContent); len(matches) > 3 {
+		result.Accepts, _ = strconv.Atoi(matches[1])
+		result.Handled, _ = strconv.Atoi(matches[2])
+		result.Requests, _ = strconv.Atoi(matches[3])
+	}
+
+	// Match the read and write waiting numbers
+	connRe := regexp.MustCompile(`Reading:\s+(\d+)\s+Writing:\s+(\d+)\s+Waiting:\s+(\d+)`)
+	if matches := connRe.FindStringSubmatch(statusContent); len(matches) > 3 {
+		result.Reading, _ = strconv.Atoi(matches[1])
+		result.Writing, _ = strconv.Atoi(matches[2])
+		result.Waiting, _ = strconv.Atoi(matches[3])
+	}
+
+	return enabled, result, nil
+}
+
+// GetStubStatus Get the stub_status module status
+func GetStubStatus() *StubStatusInfo {
+	enabled, statusURL := IsStubStatusEnabled()
+	return &StubStatusInfo{
+		Enabled: enabled,
+		URL:     statusURL,
+	}
+}
+
+// IsStubStatusEnabled Check if the stub_status module is enabled and return the access address
+// Only check the stub_status_nginx-ui.conf configuration file
+func IsStubStatusEnabled() (bool, string) {
+	stubStatusConfPath := nginx.GetConfPath("conf.d", StubStatusConfigName)
+	if _, err := os.Stat(stubStatusConfPath); os.IsNotExist(err) {
+		return false, ""
+	}
+
+	ngxConfig, err := nginx.ParseNgxConfig(stubStatusConfPath)
+	if err != nil {
+		return false, ""
+	}
+
+	// Find the stub_status configuration
+	for _, server := range ngxConfig.Servers {
+		protocol := StubStatusProtocol
+		host := StubStatusHost
+		port := settings.NginxSettings.GetStubStatusPort()
+
+		for _, location := range server.Locations {
+			// Check if the location content contains stub_status
+			if strings.Contains(location.Content, "stub_status") {
+				stubStatusURL := fmt.Sprintf("%s://%s:%d%s", protocol, host, port, StubStatusPath)
+				return true, stubStatusURL
+			}
+		}
+	}
+
+	return false, ""
+}
+
+// EnableStubStatus Enable stub_status module
+func EnableStubStatus() error {
+	enabled, _ := IsStubStatusEnabled()
+	if enabled {
+		return nil
+	}
+
+	return CreateStubStatusConfig()
+}
+
+// DisableStubStatus Disable stub_status module
+func DisableStubStatus() error {
+	stubStatusConfPath := nginx.GetConfPath("conf.d", StubStatusConfigName)
+	if _, err := os.Stat(stubStatusConfPath); os.IsNotExist(err) {
+		return nil
+	}
+
+	return os.Remove(stubStatusConfPath)
+}
+
+// CreateStubStatusConfig Create a new stub_status configuration file
+func CreateStubStatusConfig() error {
+	httpConfPath := nginx.GetConfPath("conf.d", StubStatusConfigName)
+
+	const stubStatusTemplate = `
+# DO NOT EDIT THIS FILE, IT IS AUTO GENERATED BY NGINX-UI
+# Nginx stub_status configuration for Nginx-UI
+# Modified at {{.ModifiedTime}}
+
+server {
+    listen {{.Port}};  # Use non-standard port to avoid conflicts
+    server_name {{.ServerName}};
+
+    # Status monitoring interface
+    location {{.StatusPath}} {
+        stub_status;
+        allow {{.AllowIP}}; # Only allow local access
+        deny {{.DenyAccess}};
+    }
+}
+`
+
+	type StubStatusTemplateData struct {
+		ModifiedTime string
+		Port         uint
+		ServerName   string
+		StatusPath   string
+		AllowIP      string
+		DenyAccess   string
+	}
+
+	data := StubStatusTemplateData{
+		ModifiedTime: time.Now().Format(time.DateTime),
+		Port:         settings.NginxSettings.GetStubStatusPort(),
+		ServerName:   "localhost",
+		StatusPath:   StubStatusPath,
+		AllowIP:      StubStatusAllow,
+		DenyAccess:   StubStatusDeny,
+	}
+
+	tmpl, err := template.New("stub_status").Parse(stubStatusTemplate)
+	if err != nil {
+		return cosy.WrapErrorWithParams(ErrTemplateParseError, err.Error())
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return cosy.WrapErrorWithParams(ErrTemplateExecError, err.Error())
+	}
+
+	stubStatusConfig := buf.String()
+
+	ngxConfig, err := nginx.ParseNgxConfigByContent(stubStatusConfig)
+	if err != nil {
+		return cosy.WrapErrorWithParams(ErrConfigParseError, err.Error())
+	}
+
+	ngxConfig.FileName = httpConfPath
+	configText, err := ngxConfig.BuildConfig()
+	if err != nil {
+		return cosy.WrapErrorWithParams(ErrConfigBuildError, err.Error())
+	}
+
+	return os.WriteFile(httpConfPath, []byte(configText), 0644)
+}
